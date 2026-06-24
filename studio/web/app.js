@@ -30,6 +30,7 @@ function go(screen) {
   if (screen === "download") loadVideos();
   if (screen === "shorts") loadShorts();
   if (screen === "create") loadLocalOptions();
+  if (screen === "connections") { loadHealth(); loadConnections(); }
 }
 $$(".tab").forEach((t) => (t.onclick = () => go(t.dataset.go)));
 
@@ -47,6 +48,8 @@ async function boot() {
   $("#count").value = s.default_count || 3;
   if (s.length_min) $("#lenMin").value = Math.round(s.length_min);
   if (s.length_max) $("#lenMax").value = Math.round(s.length_max);
+  STATE.vaultEnabled = s.vault_enabled;
+  if (s.needs_password_change) $("#pwBanner").classList.remove("hidden");
   go("download");
 }
 function showLogin() { $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); }
@@ -295,6 +298,105 @@ function renderResults(card, job) {
       : `<span class="bad">✗ ${res.needs_login ? "login needed" : esc(res.error)}</span>`}</div>`).join("");
 }
 function setStatus(card, text, bad, spin) {
+  const el = card.querySelector(".status-line");
+  el.innerHTML = (spin ? `<span class="spinner"></span>` : "") + esc(text);
+  el.className = "status-line" + (bad ? " bad" : "");
+}
+
+// ====================================================================
+// CONNECTIONS
+// ====================================================================
+$("#healthRefresh").onclick = loadHealth;
+async function loadHealth() {
+  try {
+    const h = await api("/api/health");
+    $("#healthChecks").innerHTML = h.checks.map((c) =>
+      `<div class="vrow"><div class="vico">${c.ok ? "✅" : (c.critical ? "❌" : "⚠️")}</div>
+        <div class="vmeta"><div class="vname">${esc(c.name)}</div>
+        <div class="muted small">${esc(c.detail || "")}</div></div></div>`).join("");
+  } catch (e) {}
+}
+
+async function loadConnections() {
+  let data;
+  try { data = await api("/api/connections"); } catch (e) { return; }
+  STATE.strategies = data.strategies;
+  $("#connList").innerHTML = data.platforms.map((p) => connCard(p, data.vault_enabled)).join("");
+  data.platforms.forEach((p) => wireConn(p.platform));
+}
+
+function chip(p) {
+  if (p.is_api) return p.has_session ? `<span class="cc ok">connected</span>` : `<span class="cc warn">not set up</span>`;
+  if (p.has_session) return `<span class="cc ok">session ✓</span>`;
+  if (p.credentials.has_credentials) return `<span class="cc warn">credentials only</span>`;
+  return `<span class="cc bad">not connected</span>`;
+}
+
+function connCard(p, vaultEnabled) {
+  const opts = (STATE.strategies || []).map((s) =>
+    `<option value="${s}" ${s === p.strategy ? "selected" : ""}>${s}</option>`).join("");
+  const credBlock = p.is_api
+    ? `<p class="muted small">Uses the YouTube API. Run <code>python -m studio.login_setup youtube</code> on the PC once to authorize.</p>`
+    : (vaultEnabled ? `
+      <details class="credbox"><summary>Credentials ${p.credentials.has_password ? "✓" : ""}</summary>
+        <label class="field"><span class="lbl">Username</span><input class="c-user" type="text" value="${esc(p.credentials.username || "")}"></label>
+        <label class="field"><span class="lbl">Password</span><input class="c-pass" type="password" placeholder="${p.credentials.has_password ? "•••••• (stored)" : ""}"></label>
+        <label class="field"><span class="lbl">2FA secret <span class="muted small">(optional, base32)</span></span><input class="c-totp" type="text" placeholder="${p.credentials.has_totp ? "•••••• (stored)" : ""}"></label>
+        <div class="row"><button class="btn ghost c-save">Save</button><button class="btn ghost c-clear">Clear</button></div>
+        <p class="muted small">Best-effort. Prefer Edge profile / saved session; credential login can trip 2FA.</p>
+      </details>` : `<p class="muted small">Credential storage disabled (cryptography not installed).</p>`);
+  return `<div class="card conn" data-p="${p.platform}">
+    <div class="short-head"><span class="badge">${icon(p.platform)} ${p.platform}</span>${chip(p)}</div>
+    <label class="field"><span class="lbl">Login strategy</span>
+      <select class="c-strat select">${opts}</select></label>
+    ${credBlock}
+    <div class="row" style="margin-top:12px">
+      <button class="btn ghost c-check">🩺 Check</button>
+      <button class="btn primary c-connect">🔗 Connect</button>
+    </div>
+    <div class="status-line"></div>
+  </div>`;
+}
+
+function wireConn(platform) {
+  const card = document.querySelector(`.conn[data-p="${platform}"]`);
+  if (!card) return;
+  const q = (s) => card.querySelector(s);
+  q(".c-strat").onchange = async () => {
+    try { await api(`/api/connections/${platform}/strategy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ strategy: q(".c-strat").value }) }); toast("Strategy saved"); }
+    catch (e) { toast(e.message); }
+  };
+  if (q(".c-save")) q(".c-save").onclick = async () => {
+    const body = { username: q(".c-user").value, password: q(".c-pass").value, totp_secret: q(".c-totp").value };
+    if (!body.username || !body.password) { setLine(card, "username + password required", true); return; }
+    try { await api(`/api/connections/${platform}/credentials`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("Credentials saved 🔒"); loadConnections(); }
+    catch (e) { setLine(card, e.message, true); }
+  };
+  if (q(".c-clear")) q(".c-clear").onclick = async () => {
+    try { await api(`/api/connections/${platform}/credentials`, { method: "DELETE" }); toast("Cleared"); loadConnections(); }
+    catch (e) { setLine(card, e.message, true); }
+  };
+  q(".c-check").onclick = () => runConn(platform, card, "health");
+  q(".c-connect").onclick = () => runConn(platform, card, "login");
+}
+
+async function runConn(platform, card, kind) {
+  setLine(card, kind === "health" ? "checking…" : "connecting…", false, true);
+  try {
+    const r = await api(`/api/connections/${platform}/${kind}`, { method: "POST" });
+    const poll = setInterval(async () => {
+      let run; try { run = await api("/api/connections/run/" + r.run_id); } catch (e) { return; }
+      if (!run.done) return;
+      clearInterval(poll);
+      if (run.error) { setLine(card, run.error, true); return; }
+      const res = run.result || {};
+      setLine(card, (res.ok ? "✅ " : "❌ ") + (res.detail || "") + (res.strategy ? ` (${res.strategy})` : ""), !res.ok);
+      loadConnections();
+    }, 1500);
+  } catch (e) { setLine(card, e.message, true); }
+}
+
+function setLine(card, text, bad, spin) {
   const el = card.querySelector(".status-line");
   el.innerHTML = (spin ? `<span class="spinner"></span>` : "") + esc(text);
   el.className = "status-line" + (bad ? " bad" : "");

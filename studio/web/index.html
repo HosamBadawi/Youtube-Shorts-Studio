@@ -111,6 +111,20 @@
         <div id="createList" class="shorts-grid"></div>
       </section>
 
+      <!-- ============ CONNECTIONS ============ -->
+      <section class="screen hidden" data-screen="connections">
+        <h1 class="screen-title">Connections</h1>
+        <p class="screen-sub">How each platform logs in, and whether it's healthy.</p>
+        <div id="pwBanner" class="banner hidden">⚠️ Your app password is still the default — change <code>app_password</code> in studio.yaml.</div>
+
+        <div class="panel">
+          <div class="section-head" style="margin-top:0"><h2>Server health</h2><button id="healthRefresh" class="btn ghost tiny">↻</button></div>
+          <div id="healthChecks" class="list"></div>
+        </div>
+
+        <div id="connList" class="list" style="margin-top:14px"></div>
+      </section>
+
       <!-- ============ SHORTS LIBRARY ============ -->
       <section class="screen hidden" data-screen="shorts">
         <h1 class="screen-title">Shorts</h1>
@@ -125,6 +139,7 @@
       <button class="tab active" data-go="download"><span class="ti">📥</span><span>Download</span></button>
       <button class="tab" data-go="create"><span class="ti">✂️</span><span>Create</span></button>
       <button class="tab" data-go="shorts"><span class="ti">🎬</span><span>Shorts</span></button>
+      <button class="tab" data-go="connections"><span class="ti">🔌</span><span>Connect</span></button>
     </nav>
   </div>
 

@@ -20,9 +20,11 @@ pool so the GPU is never double-booked and the event loop stays responsive.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import logging
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -36,28 +38,57 @@ from .config import StudioConfig
 from .jobs import STATUS_READY, JobStore
 from .metadata import VideoMeta, normalize_hashtags
 from .pipeline import StudioPipeline
+from .server_connections import build_connections_router, load_overrides
+from .vault import CredentialVault, _lockdown
 
 logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 COOKIE = "studio_auth"
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+DEFAULT_PASSWORD = "change-me"
 
 
-def _token(password: str) -> str:
-    return hmac.new(b"daily-shorts-studio", password.encode(),
-                    hashlib.sha256).hexdigest()
+def _gate_key(cfg: StudioConfig) -> bytes:
+    """Per-install random HMAC key for the auth cookie (persisted in secrets/).
+    Replaces a hardcoded key so cookies aren't forgeable across installs."""
+    p = cfg.secrets_dir / "gate.key"
+    try:
+        if p.exists():
+            return bytes.fromhex(p.read_text().strip())
+    except Exception:
+        pass
+    key = os.urandom(32)
+    try:
+        cfg.secrets_dir.mkdir(parents=True, exist_ok=True)
+        p.write_text(key.hex())
+        _lockdown(p)
+    except Exception:
+        pass
+    return key
+
+
+def _token(key: bytes, password: str) -> str:
+    return hmac.new(key, password.encode(), hashlib.sha256).hexdigest()
 
 
 def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     cfg = cfg or StudioConfig.load()
     cfg.ensure_dirs()
+    load_overrides(cfg)
     store = JobStore(cfg.db_path)
-    pipeline = StudioPipeline(cfg, store)
+    vault = CredentialVault(cfg)
+    pipeline = StudioPipeline(cfg, store, vault)
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio")
     net = ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-net")
-    expected = _token(cfg.app_password) if cfg.app_password else ""
+    gate_key = _gate_key(cfg)
+    expected = _token(gate_key, cfg.app_password) if cfg.app_password else ""
     batches: dict[str, dict] = {}    # pre-render progress per batch
     downloads: dict[str, dict] = {}  # progress per download job
+    runs: dict[str, dict] = {}       # progress per connection health/login run
+
+    if cfg.app_password == DEFAULT_PASSWORD:
+        logger.warning("app_password is still the default '%s' — change it in "
+                       "studio.yaml before exposing the tunnel!", DEFAULT_PASSWORD)
 
     app = FastAPI(title="Daily Shorts Studio")
 
@@ -65,16 +96,31 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     def require_auth(request: Request) -> None:
         if not expected:
             return
-        if request.cookies.get(COOKIE) != expected:
+        if not hmac.compare_digest(request.cookies.get(COOKIE) or "", expected):
             raise HTTPException(status_code=401, detail="not authenticated")
 
+    login_fails: dict[str, list] = {}  # ip -> recent failure timestamps
+
     @app.post("/api/login")
-    async def login(response: Response, password: str = Form("")):
-        if expected and _token(password) != expected:
+    async def login(request: Request, password: str = Form("")):
+        import time as _t
+        ip = request.client.host if request.client else "?"
+        now = _t.time()
+        fails = [t for t in login_fails.get(ip, []) if now - t < 300]
+        login_fails[ip] = fails
+        if len(fails) >= cfg.login_max_attempts:
+            raise HTTPException(status_code=429,
+                                detail="too many attempts — wait a few minutes")
+        if expected and not hmac.compare_digest(_token(gate_key, password),
+                                                expected):
+            login_fails[ip].append(now)
+            await asyncio.sleep(0.7)  # slow brute force
             raise HTTPException(status_code=401, detail="wrong password")
+        login_fails.pop(ip, None)
         resp = JSONResponse({"ok": True})
         if expected:
             resp.set_cookie(COOKIE, expected, httponly=True, samesite="lax",
+                            secure=cfg.cookie_secure,
                             max_age=60 * 60 * 24 * 30)
         return resp
 
@@ -89,7 +135,8 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     # --- status ------------------------------------------------------------
     @app.get("/api/status")
     async def status(request: Request):
-        authed = (not expected) or request.cookies.get(COOKIE) == expected
+        authed = (not expected) or hmac.compare_digest(
+            request.cookies.get(COOKIE) or "", expected)
         return {
             "authed": authed,
             "needs_password": bool(expected),
@@ -102,6 +149,8 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             "default_count": cfg.shorts_per_video,
             "length_min": cfg.min_short_seconds,
             "length_max": cfg.max_short_seconds,
+            "needs_password_change": cfg.app_password == DEFAULT_PASSWORD,
+            "vault_enabled": bool(vault and vault.enabled),
         }
 
     # --- local library -----------------------------------------------------
@@ -302,5 +351,11 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         if not job or not job.output_path or not Path(job.output_path).exists():
             raise HTTPException(404, "no preview yet")
         return FileResponse(job.output_path, media_type="video/mp4")
+
+    # --- connections / accounts + health ----------------------------------
+    # Connection health/login runs launch a browser; route them through the
+    # 'net' pool so a slow check never head-of-line-blocks GPU render/publish.
+    app.include_router(build_connections_router(
+        cfg, store, pipeline, vault, net, runs, require_auth))
 
     return app

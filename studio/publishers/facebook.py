@@ -1,71 +1,90 @@
-"""Facebook Reels publisher via Playwright automation.
+"""Facebook Reels publisher (Playwright).
 
-Posts a Reel from the saved ``sessions/facebook`` profile through the web Reels
-composer at facebook.com/reels/create. Facebook frequently A/B-tests this flow,
-so the locators below are deliberately forgiving and every step is logged.
+Subclasses :class:`PlaywrightPublisher`. NOTE (2026): posting Reels from a
+personal profile via desktop web is increasingly restricted — the durable path
+is a **Page** via Meta Business Suite. We keep ``/reels/create`` as a forgiving
+fallback; for Pages, log in (Edge profile / saved session) to an account that
+manages the target Page.
 """
 
 from __future__ import annotations
 
 import logging
 
-from ..config import StudioConfig
-from ..metadata import VideoMeta
 from .base import PublishResult
-from .playwright_base import PlaywrightUnavailable, browser_session
+from .playwright_publisher import PlaywrightPublisher
+from .session_provider import NeedsLogin
 
 logger = logging.getLogger(__name__)
 
 REELS_URL = "https://www.facebook.com/reels/create"
 
 
-class FacebookPublisher:
+class FacebookPublisher(PlaywrightPublisher):
     name = "facebook"
+    home_url = "https://www.facebook.com/"
 
-    def __init__(self, cfg: StudioConfig) -> None:
-        self.cfg = cfg
-
-    def publish(self, video_path: str, meta: VideoMeta) -> PublishResult:
-        log: list[str] = []
-        # Facebook shows title/description together; reuse the caption.
-        caption = meta.caption_for("facebook")
+    def is_logged_in(self, page) -> bool:
         try:
-            with browser_session(self.cfg.session_dir_for("facebook"),
-                                 headless=self.cfg.playwright_headless,
-                                 viewport=(1280, 900)) as page:
-                page.goto(REELS_URL, wait_until="domcontentloaded")
-                page.wait_for_timeout(5000)
+            for c in page.context.cookies():
+                if c.get("name") == "c_user" and c.get("value"):
+                    return True
+        except Exception:
+            pass
+        return "/login" not in page.url
 
-                if "/login" in page.url:
-                    return PublishResult.failure(
-                        self.name, "not logged in", needs_login=True, log=log)
-                _dismiss_cookies(page)
+    def _do_publish(self, page, video_path, meta, log) -> PublishResult:
+        caption = meta.caption_for("facebook")
+        page.goto(REELS_URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(5000)
+        _dismiss_cookies(page)
+        log.append("selecting file")
+        page.locator("input[type=file]").first.set_input_files(
+            video_path, timeout=30000)
+        page.wait_for_timeout(7000)
+        for _ in range(2):
+            if _click_text(page, ["Next"], timeout=4000):
+                page.wait_for_timeout(2500)
+        log.append("writing description")
+        _set_caption(page, caption)
+        log.append("publishing")
+        if not _click_text(page, ["Publish", "Share now", "Post"]):
+            return PublishResult.failure(self.name, "no Publish button", log=log)
+        if self._confirm_published(page, ["Publish", "Share now", "Post"],
+                                   r"your reel|published|posted|shared|تم|نشر",
+                                   50000):
+            log.append("confirmed published")
+            return PublishResult.success(self.name, url=self.home_url, log=log)
+        return PublishResult.failure(self.name,
+                                     "no publish confirmation seen", log=log)
 
-                log.append("selecting file")
-                page.locator("input[type=file]").first.set_input_files(
-                    video_path, timeout=30000)
-                page.wait_for_timeout(7000)  # upload + preview render
-
-                # Composer is a multi-step "Next" wizard before the description.
-                for _ in range(2):
-                    if _click_text(page, ["Next"], timeout=4000):
-                        page.wait_for_timeout(2500)
-
-                log.append("writing description")
-                _set_caption(page, caption)
-
-                log.append("publishing")
-                if not _click_text(page, ["Publish", "Share now", "Post"]):
-                    return PublishResult.failure(
-                        self.name, "could not find the Publish button", log=log)
-                page.wait_for_timeout(9000)
-                return PublishResult.success(self.name,
-                                             url="https://www.facebook.com/", log=log)
-        except PlaywrightUnavailable as exc:
-            return PublishResult.failure(self.name, str(exc), log=log)
-        except Exception as exc:  # pragma: no cover
-            return PublishResult.failure(self.name, f"{type(exc).__name__}: {exc}",
-                                         log=log)
+    def login_steps(self, page, creds) -> None:
+        page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
+        page.wait_for_timeout(2500)
+        _dismiss_cookies(page)
+        try:
+            page.fill("input[name=email], #email", creds["username"].reveal(),
+                      timeout=10000)
+            page.fill("input[name=pass], #pass", creds["password"].reveal())
+            page.locator("button[name=login], [data-testid=royal_login_button]"
+                         ).first.click()
+        except Exception as exc:
+            raise NeedsLogin(f"facebook login form not found ({exc})")
+        page.wait_for_timeout(5000)
+        if "checkpoint" in page.url or "two-factor" in _content(page) \
+                or "login code" in _content(page):
+            totp = creds["totp_secret"].reveal()
+            if not totp:
+                raise NeedsLogin("facebook 2FA required — add a TOTP secret or "
+                                 "log in on the host")
+            from ..vault import totp_now
+            try:
+                page.fill("input[name=approvals_code], input[autocomplete="
+                          "one-time-code]", totp_now(totp), timeout=8000)
+                _click_text(page, ["Continue", "Submit", "Next"])
+                page.wait_for_timeout(4000)
+            except Exception:
+                raise NeedsLogin("facebook 2FA — could not submit the code")
 
 
 def _dismiss_cookies(page) -> None:
@@ -101,3 +120,10 @@ def _click_text(page, labels, timeout: int = 8000) -> bool:
             except Exception:
                 continue
     return False
+
+
+def _content(page) -> str:
+    try:
+        return (page.content() or "").lower()
+    except Exception:
+        return ""

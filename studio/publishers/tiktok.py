@@ -1,67 +1,61 @@
-"""TikTok publisher via Playwright automation of the web upload studio.
+"""TikTok publisher (Playwright) — web upload studio.
 
-Uses the saved ``sessions/tiktok`` browser profile. Selectors target
-tiktok.com/upload as of 2025; if TikTok reshuffles its DOM you may need to
-adjust the locator fallbacks below - that's the known cost of web automation.
+Subclasses :class:`PlaywrightPublisher`. TikTok aggressively challenges
+automated logins (CAPTCHA/device check), so ``login_steps`` is intentionally NOT
+implemented — credentials_login surfaces ``needs_login`` and the reliable paths
+are the Edge profile or a saved session captured on the host.
 """
 
 from __future__ import annotations
 
 import logging
 
-from ..config import StudioConfig
-from ..metadata import VideoMeta
 from .base import PublishResult
-from .playwright_base import PlaywrightUnavailable, browser_session
+from .playwright_publisher import PlaywrightPublisher
 
 logger = logging.getLogger(__name__)
 
 UPLOAD_URL = "https://www.tiktok.com/upload?lang=en"
 
 
-class TikTokPublisher:
+class TikTokPublisher(PlaywrightPublisher):
     name = "tiktok"
+    home_url = "https://www.tiktok.com/"
 
-    def __init__(self, cfg: StudioConfig) -> None:
-        self.cfg = cfg
-
-    def publish(self, video_path: str, meta: VideoMeta) -> PublishResult:
-        log: list[str] = []
-        caption = meta.caption_for("tiktok")
+    def is_logged_in(self, page) -> bool:
         try:
-            with browser_session(self.cfg.session_dir_for("tiktok"),
-                                 headless=self.cfg.playwright_headless,
-                                 viewport=(1280, 900)) as page:
-                page.goto(UPLOAD_URL, wait_until="domcontentloaded")
-                page.wait_for_timeout(4000)
+            for c in page.context.cookies():
+                if c.get("name") == "sessionid" and c.get("value"):
+                    return True
+        except Exception:
+            pass
+        try:
+            return "/login" not in page.url and \
+                "log in to tiktok" not in (page.content() or "").lower()
+        except Exception:
+            return False
 
-                if _looks_logged_out(page):
-                    return PublishResult.failure(
-                        self.name, "not logged in", needs_login=True, log=log)
-
-                # The upload UI lives inside an iframe on some locales.
-                frame = _upload_frame(page)
-                log.append("locating file input")
-                file_input = frame.locator("input[type=file]").first
-                file_input.set_input_files(video_path, timeout=30000)
-                log.append("file selected; waiting for processing")
-                frame.wait_for_timeout(8000)
-
-                _set_caption(frame, caption, log)
-
-                log.append("clicking Post")
-                posted = _click_post(frame)
-                if not posted:
-                    return PublishResult.failure(
-                        self.name, "could not find the Post button", log=log)
-                page.wait_for_timeout(8000)
-                return PublishResult.success(self.name,
-                                             url="https://www.tiktok.com/", log=log)
-        except PlaywrightUnavailable as exc:
-            return PublishResult.failure(self.name, str(exc), log=log)
-        except Exception as exc:  # pragma: no cover
-            return PublishResult.failure(self.name, f"{type(exc).__name__}: {exc}",
-                                         log=log)
+    def _do_publish(self, page, video_path, meta, log) -> PublishResult:
+        caption = meta.caption_for("tiktok")
+        page.goto(UPLOAD_URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(4000)
+        frame = _upload_frame(page)
+        log.append("selecting file")
+        frame.locator("input[type=file]").first.set_input_files(
+            video_path, timeout=30000)
+        log.append("waiting for processing")
+        frame.wait_for_timeout(8000)
+        _set_caption(frame, caption, log)
+        log.append("clicking Post")
+        if not _click_post(frame):
+            return PublishResult.failure(self.name, "no Post button", log=log)
+        # TikTok shows a "Manage your posts" / success modal when done.
+        if self._confirm_published(page, ["Post"],
+                                   r"uploaded|posted|view profile|"
+                                   r"manage your posts|تم", 50000):
+            log.append("confirmed posted")
+            return PublishResult.success(self.name, url=self.home_url, log=log)
+        return PublishResult.failure(self.name, "no post confirmation seen", log=log)
 
 
 def _upload_frame(page):
@@ -74,26 +68,13 @@ def _upload_frame(page):
     return page
 
 
-def _looks_logged_out(page) -> bool:
-    try:
-        txt = (page.content() or "").lower()
-    except Exception:
-        return False
-    return "log in to tiktok" in txt or "/login" in page.url
-
-
 def _set_caption(frame, caption: str, log: list[str]) -> None:
-    selectors = [
-        "div[contenteditable=true]",
-        "div[data-text=true]",
-        "[data-e2e=caption-input]",
-    ]
-    for sel in selectors:
+    for sel in ("div[contenteditable=true]", "div[data-text=true]",
+                "[data-e2e=caption-input]"):
         try:
             box = frame.locator(sel).first
             if box.count() > 0:
                 box.click()
-                # Clear any auto-filled filename caption, then type ours.
                 box.press("Control+A")
                 box.press("Delete")
                 box.type(caption[:2150], delay=8)

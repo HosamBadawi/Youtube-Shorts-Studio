@@ -36,12 +36,16 @@ _LANG_NAMES = {
 
 
 class StudioPipeline:
-    def __init__(self, cfg: StudioConfig, store: JobStore) -> None:
+    def __init__(self, cfg: StudioConfig, store: JobStore, vault=None) -> None:
         self.cfg = cfg
         self.store = store
         self.ollama = OllamaClient(cfg.ollama_url, cfg.ollama_model,
                                    cfg.ollama_enabled, timeout=cfg.ollama_timeout,
                                    think=cfg.ollama_think)
+        if vault is None:
+            from .vault import CredentialVault
+            vault = CredentialVault(cfg)
+        self.vault = vault
 
     # ======================================================================
     # PREPARE  (transcribe -> segment -> reframe -> metadata)
@@ -146,8 +150,14 @@ class StudioPipeline:
         for platform in platforms:
             job.stage = f"publishing to {platform}"
             self.store.update(job)
+
+            def on_attempt(p, n, total, _job=job):
+                _job.stage = f"publishing to {p} (try {n}/{total})"
+                self.store.update(_job)
+
             try:
-                pub = get_publisher(platform, self.cfg)
+                pub = get_publisher(platform, self.cfg, self.vault)
+                setattr(pub, "on_attempt", on_attempt)
                 result = pub.publish(job.output_path, job.meta)
             except Exception as exc:  # pragma: no cover
                 from .publishers.base import PublishResult

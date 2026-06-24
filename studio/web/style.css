@@ -158,6 +158,18 @@ select[size] { min-height: 132px; }
 .tab.active { color: var(--fg); }
 .tab.active .ti { filter: none; transform: translateY(-1px); }
 
+/* ---------- connections ---------- */
+.banner { background: rgba(251,106,106,.12); border: 1px solid rgba(251,106,106,.4);
+  color: #ffb4b4; padding: 12px 14px; border-radius: 12px; font-size: 13px; margin-bottom: 14px; }
+.conn .short-head { justify-content: space-between; }
+.cc { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+.cc.ok { background: rgba(52,211,153,.16); color: var(--ok); }
+.cc.warn { background: rgba(255,210,80,.14); color: #ffd250; }
+.cc.bad { background: rgba(251,106,106,.14); color: var(--err); }
+.credbox { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.credbox summary { color: var(--accent); cursor: pointer; font-size: 14px; font-weight: 600; }
+.credbox .field:first-of-type { margin-top: 10px; }
+
 /* ---------- toast ---------- */
 .toast { position: fixed; left: 50%; bottom: 100px; transform: translateX(-50%); z-index: 60;
   background: var(--surface); border: 1px solid var(--line); color: var(--fg); padding: 12px 18px;

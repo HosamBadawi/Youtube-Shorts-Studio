@@ -11,8 +11,11 @@ you own or have the right to use.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import shutil
+import socket
+import urllib.parse
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -21,6 +24,27 @@ logger = logging.getLogger(__name__)
 def is_url(s: str) -> bool:
     s = s.strip().lower()
     return s.startswith("http://") or s.startswith("https://")
+
+
+def assert_safe_url(url: str) -> None:
+    """Reject non-http(s) schemes (e.g. file://) and private/internal addresses
+    so an authenticated request can't turn the downloader into an SSRF / local
+    file-read primitive."""
+    u = urllib.parse.urlparse(url.strip())
+    if u.scheme not in ("http", "https"):
+        raise ValueError("only http/https URLs are allowed")
+    host = u.hostname
+    if not host:
+        raise ValueError("invalid URL host")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception as exc:
+        raise ValueError(f"cannot resolve host: {host}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise ValueError("URL resolves to a private/internal address")
 
 
 def next_index(folder: str | Path) -> int:
@@ -50,6 +74,7 @@ def download(url: str, save_dir: str, prefer_mp4: bool = True,
 
     If ``name`` is given (e.g. "1"), the file is saved as ``<name>.<ext>``;
     otherwise yt-dlp's title-based name is used."""
+    assert_safe_url(url)
     try:
         from yt_dlp import YoutubeDL  # type: ignore
     except Exception as exc:  # pragma: no cover

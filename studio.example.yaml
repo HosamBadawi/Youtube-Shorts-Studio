@@ -71,6 +71,29 @@ enabled_platforms: [youtube, instagram, tiktok, facebook]
 one_per_day: false            # true = block a 2nd publish on the same day
 playwright_headless: true     # false = watch the browser automation run
 
+# Reliability (IG/TikTok/FB browser automation):
+publish_max_attempts: 3       # retries per platform (set 1 to avoid any re-post risk)
+publish_backoff_base: 2.0
+publish_backoff_max: 30.0
+screenshot_on_failure: true   # save a screenshot under workspace/failures/ on a fail
+health_check_timeout: 45.0
+
+# How a logged-in browser is obtained. auto = try the whole chain
+#   edge_profile -> saved_session -> credentials_login
+# or pin one. Per-platform overrides are set from the Connections screen.
+session_strategy: auto
+# session_strategy_overrides: { instagram: edge_profile }
+
+# Reuse the logins saved in Microsoft Edge (Windows). Point at the Edge
+# "User Data" dir; leave blank to skip this strategy.
+#   edge_user_data_dir: "C:/Users/<you>/AppData/Local/Microsoft/Edge/User Data"
+edge_user_data_dir: ""
+edge_profile_dir: "Default"   # which profile (see edge://version)
+
+# Encrypted credential vault (passwords NEVER go in this yaml).
+vault_db: "./secrets/vault.db"
+# vault_recovery_password: ""  # defaults to app_password for the recovery wrap
+
 # YouTube Data API v3 (the only platform with an official free API).
 youtube_client_secret: ./secrets/youtube_client_secret.json
 youtube_token: ./secrets/youtube_token.json

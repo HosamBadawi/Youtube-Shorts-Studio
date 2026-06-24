@@ -15,7 +15,13 @@ python-multipart>=0.0.9        # required by FastAPI for file uploads
 faster-whisper>=1.0
 
 # Browser automation for Instagram / TikTok / Facebook.
+# Use the system Edge via channel="msedge" (no separate browser download needed),
+# or run `python -m playwright install chromium` for the bundled browser.
 playwright>=1.42
+
+# Encrypted credential vault (AES-256-GCM). If absent, credential storage simply
+# disables itself and the Edge-profile / saved-session login paths still work.
+cryptography>=42.0
 
 # Arabic/RTL caption layout: measure word widths (Pillow) with correct joined
 # glyphs (arabic-reshaper) so each word can be positioned individually.

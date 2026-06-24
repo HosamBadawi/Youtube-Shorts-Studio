@@ -30,6 +30,11 @@ class StudioConfig:
     # A single shared password gate. CHANGE THIS. Empty string disables the gate
     # (only safe on a trusted LAN / Tailscale).
     app_password: str = "change-me"
+    # Set the Secure flag on the auth cookie (recommended when reached only over
+    # the HTTPS tunnel). Leave False if you also log in over plain-HTTP LAN.
+    cookie_secure: bool = False
+    # Max failed logins per client IP within 5 min before a temporary lockout.
+    login_max_attempts: int = 8
 
     # --- remote access ------------------------------------------------------
     # "quick"  -> free, ephemeral https URL via `cloudflared tunnel --url` (no
@@ -101,6 +106,34 @@ class StudioConfig:
     # Folder the web app browses for local source videos ("" = use download_dir).
     media_library: str = ""
 
+    # --- publish reliability (browser-automation platforms) -----------------
+    publish_max_attempts: int = 3           # retries per platform per publish
+    publish_backoff_base: float = 2.0       # seconds; exponential w/ full jitter
+    publish_backoff_factor: float = 2.0
+    publish_backoff_max: float = 30.0
+    screenshot_on_failure: bool = True      # save a screenshot on a failed try
+    health_check_timeout: float = 45.0      # per-platform health/login budget (s)
+
+    # --- session strategy (how a logged-in browser is obtained) -------------
+    # auto = try the whole chain [edge_profile -> saved_session ->
+    # credentials_login]; or pin one. Per-platform overrides win.
+    session_strategy: str = "auto"
+    session_strategy_overrides: dict = field(default_factory=dict)
+
+    # Reuse the logins saved in your Microsoft Edge profile. Empty disables it.
+    # Point at the Edge "User Data" dir, e.g.
+    #   C:/Users/<you>/AppData/Local/Microsoft/Edge/User Data
+    edge_user_data_dir: str = ""
+    edge_profile_dir: str = "Default"       # which profile (see edge://version)
+    # Private working dir the profile is COPIED into (never launch the live one).
+    edge_automation_dir: str = ""           # "" -> %LOCALAPPDATA%/EdgeAutomation
+
+    # --- credential vault (encrypted at rest) -------------------------------
+    vault_db: str = "./secrets/vault.db"
+    # Password used to scrypt-wrap the vault key for portable recovery. Empty ->
+    # use app_password. (DPAPI is the no-prompt primary unwrap on Windows.)
+    vault_recovery_password: str = ""
+
     # YouTube Data API (the only platform using an official API).
     youtube_client_secret: str = "./secrets/youtube_client_secret.json"
     youtube_token: str = "./secrets/youtube_token.json"
@@ -146,13 +179,38 @@ class StudioConfig:
     def db_path(self) -> Path:
         return self.workspace_path / "studio.db"
 
+    @property
+    def failures_dir(self) -> Path:
+        # Failure screenshots. NOT under web/static — never web-served.
+        return self.workspace_path / "failures"
+
+    @property
+    def secrets_dir(self) -> Path:
+        return Path(self.vault_db).expanduser().resolve().parent
+
+    @property
+    def vault_path(self) -> Path:
+        return Path(self.vault_db).expanduser().resolve()
+
+    @property
+    def edge_automation_path(self) -> Path:
+        # Default under the locked-down secrets/ dir: the copy holds live auth
+        # cookies + the cookie master key, so it must be ACL-restricted + ignored.
+        if self.edge_automation_dir:
+            return Path(self.edge_automation_dir).expanduser()
+        return self.secrets_dir / "edge_profile"
+
+    def session_strategy_for(self, platform: str) -> str:
+        ov = self.session_strategy_overrides or {}
+        return str(ov.get(platform, self.session_strategy) or "auto")
+
     def session_dir_for(self, platform: str) -> Path:
         return self.sessions_dir / platform
 
     def ensure_dirs(self) -> None:
         for p in (self.incoming_dir, self.rendered_dir, self.sessions_dir,
                   self.download_dir, self.shorts_dir, self.uploaded_dir,
-                  self.library_path):
+                  self.library_path, self.failures_dir, self.secrets_dir):
             p.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------------
@@ -171,7 +229,10 @@ class StudioConfig:
                 setattr(cfg, f.name, data[f.name])
             env_key = "STUDIO_" + f.name.upper()
             if env_key in os.environ:
-                setattr(cfg, f.name, _coerce(os.environ[env_key], getattr(cfg, f.name)))
+                cur = getattr(cfg, f.name)
+                if isinstance(cur, dict):
+                    continue  # dicts (e.g. strategy overrides) come from YAML only
+                setattr(cfg, f.name, _coerce(os.environ[env_key], cur))
         return cfg
 
 

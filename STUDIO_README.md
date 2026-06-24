@@ -119,12 +119,43 @@ re-run, and watch where it stops; the selectors live in
 session expires you'll see **"login needed"** in the results — just re-run
 `python -m studio.login_setup <platform>`.
 
+## Publishing (the Connections screen)
+
+Each platform logs in through a **fallback chain** (configurable per platform):
+
+1. **Edge profile** — reuse the logins already saved in Microsoft Edge. Set
+   `edge_user_data_dir` to your Edge `User Data` folder. The app **copies** the
+   profile (never touches your live one) and drives the signed Edge binary.
+2. **Saved session** — capture once on the PC with
+   `python -m studio.login_setup <platform>` (handles 2FA in a real window).
+3. **Credentials** — username/password (+ optional TOTP) entered in the
+   Connections screen, stored encrypted. Best-effort; IG/TikTok/FB may still
+   challenge automated logins with CAPTCHA/2FA, in which case the app reports
+   "login needed" rather than looping.
+
+Publishing **retries with backoff**, waits for an on-page confirmation before
+marking success (so a retry won't double-post), saves a screenshot to
+`workspace/failures/` on a failed try, and the **Connect/Check** buttons run a
+health check. YouTube always uses its official API.
+
 ## Security notes
 
-- Keep `app_password` strong; the tunnel makes the app world-reachable.
-- `workspace/sessions/` and `secrets/` hold live logins/tokens — never commit or
-  share them.
-- Prefer `cloudflare_mode: named` (or Tailscale) for a stable, lockable URL.
+- **Change `app_password`** — the tunnel makes the app world-reachable. The login
+  gate is rate-limited and uses a per-install random key; set `cookie_secure: true`
+  if you only reach it over the HTTPS tunnel.
+- **Credentials are encrypted at rest** (AES-256-GCM). The key is wrapped with
+  Windows **DPAPI** (so a copied `secrets/` folder is useless on another machine)
+  and, only if you set a **strong** `app_password`/`vault_recovery_password`, also
+  with scrypt for portable recovery. Back up `secrets/dek.scrypt` + that password
+  if you want cross-machine recovery; otherwise creds are bound to this Windows
+  user. The vault auto-disables (no plaintext) if `cryptography` isn't installed.
+- `workspace/` and `secrets/` hold live logins/tokens/cookies (incl. the copied
+  Edge profile) — all gitignored and ACL-locked to your user; never commit/share.
+- The Connections status shows the configured **username** for each platform (so
+  you know which account is set) — it's behind the password gate; treat the gate
+  as the boundary.
+- Prefer `cloudflare_mode: named` + **Cloudflare Access**, or Tailscale, for a
+  stable, lockable URL in front of the tunnel.
 
 ## Troubleshooting
 

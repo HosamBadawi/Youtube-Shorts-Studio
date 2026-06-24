@@ -29,8 +29,22 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 class YouTubePublisher:
     name = "youtube"
 
-    def __init__(self, cfg: StudioConfig) -> None:
+    def __init__(self, cfg: StudioConfig, vault=None) -> None:
         self.cfg = cfg
+        self.vault = vault  # unused (official API); kept for a uniform signature
+
+    # ------------------------------------------------------------------
+    def health(self):
+        """Refresh the cached OAuth token without uploading; report status."""
+        import time as _t
+        from ..health import HealthStatus
+        try:
+            self.authorize(interactive=False)
+            return HealthStatus(self.name, True, "authorized",
+                                strategy="api", checked_at=_t.time())
+        except Exception as exc:
+            return HealthStatus(self.name, False, f"{type(exc).__name__}: {exc}",
+                                checked_at=_t.time())
 
     # ------------------------------------------------------------------
     def authorize(self, interactive: bool = True):
@@ -60,6 +74,8 @@ class YouTubePublisher:
                                "`python -m studio.login_setup youtube`")
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
+        from ..vault import _lockdown  # OAuth refresh token == publish access
+        _lockdown(token_path)
         return creds
 
     # ------------------------------------------------------------------
