@@ -23,6 +23,14 @@ class InstagramPublisher(PlaywrightPublisher):
     home_url = "https://www.instagram.com/"
 
     def is_logged_in(self, page) -> bool:
+        # Cookie check first — robust in headless (the DOM varies). Instagram
+        # sets sessionid + ds_user_id once you're logged in.
+        try:
+            for c in page.context.cookies():
+                if c.get("name") in ("sessionid", "ds_user_id") and c.get("value"):
+                    return True
+        except Exception:
+            pass
         try:
             if "/accounts/login" in page.url or "/accounts/onetap" in page.url:
                 return False
