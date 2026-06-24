@@ -23,6 +23,17 @@ def is_url(s: str) -> bool:
     return s.startswith("http://") or s.startswith("https://")
 
 
+def next_index(folder: str | Path) -> int:
+    """Next free integer for sequential naming (1.mp4, 2.mp4, …) in ``folder``."""
+    folder = Path(folder)
+    nums = [0]
+    if folder.exists():
+        for p in folder.iterdir():
+            if p.is_file() and p.stem.isdigit():
+                nums.append(int(p.stem))
+    return max(nums) + 1
+
+
 def _progress_hook(d: dict) -> None:
     if d.get("status") == "downloading":
         pct = d.get("_percent_str", "").strip()
@@ -33,8 +44,12 @@ def _progress_hook(d: dict) -> None:
 
 
 def download(url: str, save_dir: str, prefer_mp4: bool = True,
-             aria2_connections: int = 16, quiet: bool = True) -> str:
-    """Download ``url`` into ``save_dir`` and return the final file path."""
+             aria2_connections: int = 16, quiet: bool = True,
+             name: str | None = None, on_progress=None) -> str:
+    """Download ``url`` into ``save_dir`` and return the final file path.
+
+    If ``name`` is given (e.g. "1"), the file is saved as ``<name>.<ext>``;
+    otherwise yt-dlp's title-based name is used."""
     try:
         from yt_dlp import YoutubeDL  # type: ignore
     except Exception as exc:  # pragma: no cover
@@ -47,15 +62,16 @@ def download(url: str, save_dir: str, prefer_mp4: bool = True,
     else:
         fmt = "bestvideo+bestaudio/best"
 
+    outtmpl = (f"{name}.%(ext)s" if name else "%(title).80s - %(id)s.%(ext)s")
     opts: dict = {
         "format": fmt,
-        "outtmpl": str(Path(save_dir) / "%(title).80s - %(id)s.%(ext)s"),
+        "outtmpl": str(Path(save_dir) / outtmpl),
         "noplaylist": True,
         "retries": 3,
         "continuedl": True,
         "quiet": quiet,
         "no_warnings": quiet,
-        "progress_hooks": [_progress_hook],
+        "progress_hooks": [on_progress or _progress_hook],
     }
     if prefer_mp4:
         opts["merge_output_format"] = "mp4"

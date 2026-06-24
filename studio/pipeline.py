@@ -158,10 +158,26 @@ class StudioPipeline:
 
         if any_ok:
             self.store.mark_published_today(job.id)
+            self._move_to_uploaded(job)
         job.status = STATUS_DONE
         job.stage = ""
         self.store.update(job)
         return job
+
+    def _move_to_uploaded(self, job: Job) -> None:
+        """After a short is published, move its file into the uploaded/ folder."""
+        src = Path(job.output_path)
+        if not src.exists():
+            return
+        self.cfg.uploaded_dir.mkdir(parents=True, exist_ok=True)
+        dest = self.cfg.uploaded_dir / src.name
+        try:
+            if dest.exists():
+                dest.unlink()
+            shutil.move(str(src), str(dest))
+            job.output_path = str(dest)
+        except OSError as exc:  # pragma: no cover
+            logger.warning("could not move %s to uploaded/: %s", src, exc)
 
     # ======================================================================
     # MULTI-SHORT  (one long video / URL -> N reviewable short Jobs)
@@ -172,7 +188,7 @@ class StudioPipeline:
         render each into its own READY Job (reframe + captions + per-segment
         metadata). Returns the created job ids. ``on_stage(str)`` reports the
         pre-render progress so the web UI can show it."""
-        from .downloader import download, is_url
+        from .downloader import download, is_url, next_index
 
         def stage(s: str) -> None:
             if on_stage:
@@ -186,8 +202,10 @@ class StudioPipeline:
 
         if is_url(source):
             stage("downloading video")
-            source = download(source, str(self.cfg.download_dir),
-                              prefer_mp4=self.cfg.download_prefer_mp4)
+            idx = next_index(self.cfg.library_path)  # 1.mp4, 2.mp4, …
+            source = download(source, str(self.cfg.library_path),
+                              prefer_mp4=self.cfg.download_prefer_mp4,
+                              name=str(idx))
         stage("probing")
         duration = _probe_duration(source)
 
@@ -206,6 +224,7 @@ class StudioPipeline:
                                   self.cfg.max_short_seconds, duration), topic)
                 for s, e, topic in segs]
         language = self._metadata_language(tr.language)
+        longstem = Path(source).stem  # e.g. "1" -> shorts "1_1.mp4", "1_2.mp4"…
 
         job_ids: list[str] = []
         for idx, (start, end, topic) in enumerate(segs, 1):
@@ -222,7 +241,7 @@ class StudioPipeline:
                 seg_mp4 = self._trim(source, job.id, (start, end))
                 raw = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
                 self._reframe(seg_mp4, raw)
-                out = str(self.cfg.rendered_dir / f"{job.id}.mp4")
+                out = str(self.cfg.shorts_dir / f"{longstem}_{idx}.mp4")
                 self._apply_captions(job, tr.words, raw, out)
                 job.output_path = out
                 Path(seg_mp4).unlink(missing_ok=True)

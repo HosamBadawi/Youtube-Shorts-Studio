@@ -122,8 +122,17 @@ class StudioConfig:
 
     @property
     def library_path(self) -> Path:
+        """Where long source videos live (downloads land here as 1.mp4, 2.mp4…)."""
         return Path(self.media_library).expanduser() if self.media_library \
             else self.download_dir
+
+    @property
+    def shorts_dir(self) -> Path:
+        return self.workspace_path / "shorts"
+
+    @property
+    def uploaded_dir(self) -> Path:
+        return self.workspace_path / "uploaded"
 
     @property
     def rendered_dir(self) -> Path:
@@ -142,7 +151,8 @@ class StudioConfig:
 
     def ensure_dirs(self) -> None:
         for p in (self.incoming_dir, self.rendered_dir, self.sessions_dir,
-                  self.download_dir):
+                  self.download_dir, self.shorts_dir, self.uploaded_dir,
+                  self.library_path):
             p.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------------

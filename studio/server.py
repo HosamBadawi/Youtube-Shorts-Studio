@@ -54,8 +54,10 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     store = JobStore(cfg.db_path)
     pipeline = StudioPipeline(cfg, store)
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio")
+    net = ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-net")
     expected = _token(cfg.app_password) if cfg.app_password else ""
-    batches: dict[str, dict] = {}  # in-memory pre-render progress per batch
+    batches: dict[str, dict] = {}    # pre-render progress per batch
+    downloads: dict[str, dict] = {}  # progress per download job
 
     app = FastAPI(title="Daily Shorts Studio")
 
@@ -119,6 +121,51 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(404, "video not found in library")
         return p
 
+    # --- download only (a standalone feature) ------------------------------
+    @app.post("/api/download")
+    async def start_download(url: str = Form(...), _: None = Depends(require_auth)):
+        from .downloader import download, next_index
+        if not url.strip():
+            raise HTTPException(400, "no URL provided")
+        did = uuid.uuid4().hex[:12]
+        downloads[did] = {"stage": "starting", "done": False, "error": "",
+                          "file": ""}
+
+        def prog(d: dict) -> None:
+            if d.get("status") == "downloading":
+                downloads[did]["stage"] = "downloading " + \
+                    d.get("_percent_str", "").strip()
+            elif d.get("status") == "finished":
+                downloads[did]["stage"] = "finishing…"
+
+        def run() -> None:
+            try:
+                idx = next_index(cfg.library_path)
+                path = download(url.strip(), str(cfg.library_path),
+                                prefer_mp4=cfg.download_prefer_mp4,
+                                name=str(idx), on_progress=prog)
+                downloads[did]["file"] = Path(path).name
+                downloads[did]["stage"] = "done"
+            except Exception as exc:  # pragma: no cover
+                logger.exception("download failed")
+                downloads[did]["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                downloads[did]["done"] = True
+
+        net.submit(run)
+        return {"ok": True, "download_id": did}
+
+    @app.get("/api/download/{did}")
+    async def download_status(did: str, _: None = Depends(require_auth)):
+        return downloads.get(did, {"stage": "", "done": True,
+                                   "error": "unknown id", "file": ""})
+
+    # --- shorts library (all generated shorts, for publishing later) -------
+    @app.get("/api/shorts")
+    async def list_shorts(_: None = Depends(require_auth)):
+        jobs = [j for j in store.list_recent(60) if j.output_path]
+        return {"shorts": [j.to_dict() for j in jobs]}
+
     # --- generate shorts ---------------------------------------------------
     @app.post("/api/generate")
     async def generate(
@@ -133,8 +180,11 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         if source_type == "upload":
             if not file:
                 raise HTTPException(400, "no file uploaded")
+            from .downloader import next_index
             suffix = Path(file.filename or "src.mp4").suffix or ".mp4"
-            dest = cfg.incoming_dir / f"src_{uuid.uuid4().hex[:8]}{suffix}"
+            # Save uploaded long videos into the library as 1.mp4, 2.mp4, … so
+            # their shorts follow the same naming (1_1.mp4, …).
+            dest = cfg.library_path / f"{next_index(cfg.library_path)}{suffix}"
             with dest.open("wb") as fh:
                 while chunk := await file.read(1024 * 1024):
                     fh.write(chunk)
