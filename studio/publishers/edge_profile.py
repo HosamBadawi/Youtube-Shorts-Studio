@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import shutil
+import subprocess
+import time
 from pathlib import Path
 
 from ..config import StudioConfig
@@ -123,17 +125,55 @@ def _read_float(p: Path) -> float:
         return 0.0
 
 
+def edge_running() -> bool:
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq msedge.exe"],
+                             capture_output=True, text=True)
+        return "msedge.exe" in (out.stdout or "")
+    except Exception:
+        return False
+
+
+def ensure_edge_closed(cfg: StudioConfig) -> bool:
+    """Return True if Edge is closed (closing it first if configured to)."""
+    if not edge_running():
+        return True
+    if not cfg.edge_close_if_running:
+        return False
+    logger.info("closing Edge to free the live profile…")
+    try:
+        subprocess.run(["taskkill", "/IM", "msedge.exe", "/F"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+    except Exception:
+        pass
+    return not edge_running()
+
+
 def open_context(p, cfg: StudioConfig, headless: bool,
                  viewport: tuple[int, int] | None):
-    """Launch a persistent msedge context against the COPIED profile, or None."""
-    work_root = prepare_copy(cfg)
-    if work_root is None:
+    """Launch an msedge context using the live profile (if configured) or a
+    safe copy. Returns the context, or None to fall through the chain."""
+    if not available(cfg):
         return None
     profile = cfg.edge_profile_dir or "Default"
     vp = {"width": viewport[0], "height": viewport[1]} if viewport else None
+
+    if cfg.edge_use_live_profile:
+        if not ensure_edge_closed(cfg):
+            logger.warning("edge_use_live_profile: Edge is open — close it (or "
+                           "set edge_close_if_running). Falling through.")
+            return None
+        user_data = str(Path(cfg.edge_user_data_dir).expanduser())
+    else:
+        work_root = prepare_copy(cfg)
+        if work_root is None:
+            return None
+        user_data = str(work_root)
+
     try:
         return p.chromium.launch_persistent_context(
-            user_data_dir=str(work_root),
+            user_data_dir=user_data,
             channel="msedge",
             headless=headless,
             viewport=vp,

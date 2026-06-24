@@ -125,8 +125,14 @@ class StudioConfig:
     #   C:/Users/<you>/AppData/Local/Microsoft/Edge/User Data
     edge_user_data_dir: str = ""
     edge_profile_dir: str = "Default"       # which profile (see edge://version)
-    # Private working dir the profile is COPIED into (never launch the live one).
-    edge_automation_dir: str = ""           # "" -> %LOCALAPPDATA%/EdgeAutomation
+    # Private working dir the profile is COPIED into (default = safe copy mode).
+    edge_automation_dir: str = ""           # "" -> secrets/edge_profile
+    # Use the LIVE Edge profile directly (your exact cookies/extensions) instead
+    # of a copy. Requires Edge to be CLOSED while automation runs.
+    edge_use_live_profile: bool = False
+    # If Edge is open when automation needs the profile, close it automatically
+    # (so a remote publish isn't blocked by a profile lock).
+    edge_close_if_running: bool = False
 
     # --- credential vault (encrypted at rest) -------------------------------
     vault_db: str = "./secrets/vault.db"
