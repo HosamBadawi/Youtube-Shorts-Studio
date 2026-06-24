@@ -57,8 +57,8 @@ def _watch(proc: subprocess.Popen) -> None:
         if m and not announced:
             announced = True
             url = m.group(0)
-            print("\n" + "=" * 56)
-            print(f"  📱 Open this on your phone:  {url}")
-            print("=" * 56 + "\n")
+            print("\n" + "=" * 60, flush=True)
+            print(f"  📱 Open this on your phone:  {url}", flush=True)
+            print("=" * 60 + "\n", flush=True)
         elif "ERR" in line or "error" in line.lower():
             logger.debug("cloudflared: %s", line.strip())
