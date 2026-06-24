@@ -242,9 +242,22 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     except Exception:  # pragma: no cover - PyYAML missing
         return {}
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        # A typo (e.g. '=' instead of ':') would otherwise silently revert ALL
+        # settings to defaults — make that loud instead.
+        import logging
+        logging.getLogger(__name__).error(
+            "FAILED to parse %s (%s) — running on DEFAULTS until fixed!",
+            path, exc)
+        print(f"\n⚠️  Could not parse {path}: {exc}\n"
+              f"   Using DEFAULT settings until you fix it (check for '=' vs ':' "
+              f"and use forward slashes in Windows paths).\n")
         return {}
+    if data is not None and not isinstance(data, dict):
+        print(f"\n⚠️  {path} is not a key: value mapping — using defaults.\n")
+        return {}
+    return data or {}
 
 
 def _coerce(raw: str, current: Any) -> Any:
