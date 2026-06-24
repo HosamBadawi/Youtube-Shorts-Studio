@@ -164,6 +164,87 @@ class StudioPipeline:
         return job
 
     # ======================================================================
+    # MULTI-SHORT  (one long video / URL -> N reviewable short Jobs)
+    # ======================================================================
+    def generate_shorts(self, source: str, count: int, niche: str = "",
+                        batch_id: str = "", on_stage=None) -> list[str]:
+        """Download (if URL) -> transcribe -> pick ``count`` distinct segments ->
+        render each into its own READY Job (reframe + captions + per-segment
+        metadata). Returns the created job ids. ``on_stage(str)`` reports the
+        pre-render progress so the web UI can show it."""
+        from .downloader import download, is_url
+
+        def stage(s: str) -> None:
+            if on_stage:
+                try:
+                    on_stage(s)
+                except Exception:
+                    pass
+
+        if self.cfg.ollama_enabled:
+            self.ollama.resolve_model()
+
+        if is_url(source):
+            stage("downloading video")
+            source = download(source, str(self.cfg.download_dir),
+                              prefer_mp4=self.cfg.download_prefer_mp4)
+        stage("probing")
+        duration = _probe_duration(source)
+
+        stage("transcribing")
+        tr = transcribe(source, self.cfg.whisper_model, self.cfg.whisper_device,
+                        self.cfg.whisper_enabled, self.cfg.whisper_language)
+
+        stage("selecting highlights")
+        segs: list[tuple[float, float, str]] = []
+        if tr.available:
+            segs = self.ollama.pick_segments(tr.timestamped(), duration, count,
+                                             self.cfg.target_short_seconds)
+        if not segs:  # no transcript / model -> at least one default window
+            segs = [(0.0, min(self.cfg.target_short_seconds, duration), "")]
+        segs = [(*_enforce_bounds((s, e), self.cfg.min_short_seconds,
+                                  self.cfg.max_short_seconds, duration), topic)
+                for s, e, topic in segs]
+        language = self._metadata_language(tr.language)
+
+        job_ids: list[str] = []
+        for idx, (start, end, topic) in enumerate(segs, 1):
+            job = self.store.create(source, batch_id=batch_id, topic=topic)
+            job.duration = duration
+            job.segment = (start, end)
+            job.transcript = " ".join(w.text for w in tr.words
+                                      if start <= w.start < end)
+            job.status = STATUS_PROCESSING
+            job.stage = f"short {idx}/{len(segs)}: rendering"
+            self.store.update(job)
+            stage(f"rendering short {idx}/{len(segs)}")
+            try:
+                seg_mp4 = self._trim(source, job.id, (start, end))
+                raw = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
+                self._reframe(seg_mp4, raw)
+                out = str(self.cfg.rendered_dir / f"{job.id}.mp4")
+                self._apply_captions(job, tr.words, raw, out)
+                job.output_path = out
+                Path(seg_mp4).unlink(missing_ok=True)
+                if self.ollama.available():
+                    job.stage = f"short {idx}: writing caption"
+                    self.store.update(job)
+                    m = self.ollama.generate_metadata(job.transcript or topic,
+                                                      None, niche, language)
+                    if m:
+                        job.meta = m
+                job.status = STATUS_READY
+                job.stage = ""
+            except Exception as exc:  # pragma: no cover - cv2/ffmpeg runtime
+                logger.exception("short %d render failed", idx)
+                job.status = STATUS_ERROR
+                job.error = f"{type(exc).__name__}: {exc}"
+            self.store.update(job)
+            job_ids.append(job.id)
+        stage("done")
+        return job_ids
+
+    # ======================================================================
     # helpers
     # ======================================================================
     def _trim(self, src: str, job_id: str, span: tuple[float, float]) -> str:

@@ -22,72 +22,62 @@
       <p id="loginErr" class="err"></p>
     </section>
 
-    <!-- UPLOAD -->
-    <section id="upload" class="card hidden">
-      <h2>Today's clip</h2>
-      <label class="filepick" id="filepick">
-        <input id="file" type="file" accept="video/*" />
-        <span id="fileLabel">Tap to choose a video</span>
-      </label>
-
-      <label class="field">Niche / topic <span class="hint">(helps the AI captions)</span>
-        <input id="niche" type="text" placeholder="e.g. fitness tips, football, AI news" />
-      </label>
-
-      <label class="switch">
-        <input id="autoMeta" type="checkbox" checked />
-        <span>Let Ollama write title / caption / hashtags</span>
-      </label>
-      <label class="switch">
-        <input id="perPlatform" type="checkbox" />
-        <span>Tailor captions per platform</span>
-      </label>
-
-      <details>
-        <summary>Or write it myself now</summary>
-        <label class="field">Title <input id="mTitle" type="text" /></label>
-        <label class="field">Caption <textarea id="mCaption" rows="3"></textarea></label>
-        <label class="field">Hashtags <input id="mTags" type="text" placeholder="#shorts #viral" /></label>
-      </details>
-
-      <button id="uploadBtn" class="primary">Upload &amp; prepare</button>
-      <p id="uploadErr" class="err"></p>
-    </section>
-
-    <!-- PROCESSING -->
-    <section id="processing" class="card hidden">
-      <h2>Preparing…</h2>
-      <div class="spinner"></div>
-      <p id="stage" class="stage">starting…</p>
-    </section>
-
-    <!-- REVIEW -->
-    <section id="review" class="card hidden">
-      <h2>Review &amp; publish</h2>
-      <video id="preview" controls playsinline></video>
-      <p id="segNote" class="hint"></p>
-
-      <label class="field">Title <input id="rTitle" type="text" /></label>
-      <label class="field">Caption <textarea id="rCaption" rows="4"></textarea></label>
-      <label class="field">Hashtags <input id="rTags" type="text" /></label>
-
-      <div class="row">
-        <button id="regenBtn" class="ghost">✨ Regenerate with AI</button>
-        <button id="saveMetaBtn" class="ghost">Save edits</button>
+    <!-- SOURCE -->
+    <section id="source" class="card hidden">
+      <h2>New shorts</h2>
+      <div class="tabs">
+        <button class="tab active" data-tab="upload">📤 Upload</button>
+        <button class="tab" data-tab="url">▶️ YouTube</button>
+        <button class="tab" data-tab="local">💾 On PC</button>
       </div>
 
-      <h3>Publish to</h3>
-      <div id="platforms" class="platforms"></div>
+      <div class="tabpane" data-pane="upload">
+        <label class="filepick" id="filepick">
+          <input id="file" type="file" accept="video/*" />
+          <span id="fileLabel">Tap to choose a long video</span>
+        </label>
+      </div>
 
-      <button id="publishBtn" class="primary">🚀 Publish now</button>
-      <p id="publishErr" class="err"></p>
+      <div class="tabpane hidden" data-pane="url">
+        <label class="field">YouTube URL
+          <input id="url" type="text" inputmode="url" placeholder="https://youtube.com/watch?v=…" />
+        </label>
+      </div>
+
+      <div class="tabpane hidden" data-pane="local">
+        <p class="hint" id="libDir"></p>
+        <select id="localPick" size="6" class="picklist"></select>
+        <button id="refreshLib" class="ghost">↻ Refresh list</button>
+      </div>
+
+      <div class="row2">
+        <label class="field">How many shorts?
+          <input id="count" type="number" min="1" max="20" value="3" />
+        </label>
+        <label class="field">Niche / topic
+          <input id="niche" type="text" placeholder="e.g. geopolitics" />
+        </label>
+      </div>
+
+      <button id="genBtn" class="primary">✂️ Generate shorts</button>
+      <p id="genErr" class="err"></p>
     </section>
 
-    <!-- RESULTS -->
-    <section id="results" class="card hidden">
-      <h2>Results</h2>
-      <div id="resultList"></div>
-      <button id="newBtn" class="ghost">New upload</button>
+    <!-- GENERATING -->
+    <section id="generating" class="card hidden">
+      <h2>Working…</h2>
+      <div class="spinner"></div>
+      <p id="genStage" class="stage">starting…</p>
+      <p class="hint">Shorts appear below as they finish — you can start reviewing them.</p>
+    </section>
+
+    <!-- SHORTS -->
+    <section id="shorts" class="hidden">
+      <div class="shortsbar">
+        <h2 id="shortsTitle">Your shorts</h2>
+        <button id="newBatch" class="ghost small">+ New</button>
+      </div>
+      <div id="shortList"></div>
     </section>
   </main>
 

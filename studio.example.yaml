@@ -60,9 +60,15 @@ caption_base_color: "#FFFFFF"
 caption_position: lower          # lower | center | bottom
 caption_max_words: 4             # how many words show on screen at once
 
+# --- INPUT / LIBRARY -------------------------------------------------------
+# Folder the web app's "On PC" tab browses for local source videos.
+# Leave blank to use workspace/downloads. Point it at your video folder.
+media_library: ""
+download_prefer_mp4: true     # download YouTube sources as mp4
+
 # --- PUBLISHING ------------------------------------------------------------
 enabled_platforms: [youtube, instagram, tiktok, facebook]
-one_per_day: true             # block a 2nd publish on the same calendar day
+one_per_day: false            # true = block a 2nd publish on the same day
 playwright_headless: true     # false = watch the browser automation run
 
 # YouTube Data API v3 (the only platform with an official free API).

@@ -95,8 +95,11 @@ class StudioConfig:
 
     # --- publishing ---------------------------------------------------------
     enabled_platforms: list[str] = field(default_factory=lambda: list(PLATFORMS))
-    one_per_day: bool = True                # block a 2nd publish on the same day
+    one_per_day: bool = False               # block a 2nd publish on the same day
     playwright_headless: bool = True        # set False to watch automation run
+
+    # Folder the web app browses for local source videos ("" = use download_dir).
+    media_library: str = ""
 
     # YouTube Data API (the only platform using an official API).
     youtube_client_secret: str = "./secrets/youtube_client_secret.json"
@@ -118,6 +121,11 @@ class StudioConfig:
         return self.workspace_path / "downloads"
 
     @property
+    def library_path(self) -> Path:
+        return Path(self.media_library).expanduser() if self.media_library \
+            else self.download_dir
+
+    @property
     def rendered_dir(self) -> Path:
         return self.workspace_path / "rendered"
 
@@ -133,7 +141,8 @@ class StudioConfig:
         return self.sessions_dir / platform
 
     def ensure_dirs(self) -> None:
-        for p in (self.incoming_dir, self.rendered_dir, self.sessions_dir):
+        for p in (self.incoming_dir, self.rendered_dir, self.sessions_dir,
+                  self.download_dir):
             p.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------------

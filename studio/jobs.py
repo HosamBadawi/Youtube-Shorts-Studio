@@ -41,6 +41,8 @@ class Job:
     duration: float = 0.0
     stage: str = ""                       # human-readable current step
     error: str = ""
+    batch_id: str = ""                    # groups shorts cut from one long video
+    topic: str = ""                       # this short's distinct topic
     meta: VideoMeta = field(default_factory=VideoMeta)
     transcript: str = ""                  # plain transcript text (for reference)
     segment: tuple[float, float] | None = None  # picked (start, end), if any
@@ -57,6 +59,8 @@ class Job:
             "error": self.error,
             "duration": round(self.duration, 1),
             "has_output": bool(self.output_path),
+            "batch_id": self.batch_id,
+            "topic": self.topic,
             "segment": list(self.segment) if self.segment else None,
             "meta": self.meta.to_dict(),
             "transcript": self.transcript,
@@ -96,21 +100,29 @@ class JobStore:
                     published_day TEXT
                 )"""
             )
+            # Migrations for DBs created before these columns existed.
+            for col in ("batch_id TEXT", "topic TEXT"):
+                try:
+                    c.execute(f"ALTER TABLE jobs ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass  # already present
 
     # --- create / read ------------------------------------------------------
-    def create(self, source_path: str) -> Job:
+    def create(self, source_path: str, batch_id: str = "",
+               topic: str = "") -> Job:
         job = Job(id=uuid.uuid4().hex[:12], created_at=time.time(),
-                  status=STATUS_NEW, source_path=source_path)
+                  status=STATUS_NEW, source_path=source_path,
+                  batch_id=batch_id, topic=topic)
         with self._lock, self._conn() as c:
             c.execute(
                 """INSERT INTO jobs (id, created_at, created_day, status,
                        source_path, output_path, duration, stage, error,
                        meta_json, transcript, segment_json, results_json,
-                       published_day)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       published_day, batch_id, topic)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (job.id, job.created_at, _today(), job.status, source_path,
                  "", 0.0, "", "", json.dumps(job.meta.to_dict()), "",
-                 "null", "{}", ""),
+                 "null", "{}", "", batch_id, topic),
             )
         return job
 
@@ -124,6 +136,13 @@ class JobStore:
             rows = c.execute(
                 "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?",
                 (limit,)).fetchall()
+        return [_row_to_job(r) for r in rows]
+
+    def list_by_batch(self, batch_id: str) -> list[Job]:
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                "SELECT * FROM jobs WHERE batch_id=? ORDER BY created_at",
+                (batch_id,)).fetchall()
         return [_row_to_job(r) for r in rows]
 
     def todays_job(self) -> Job | None:
@@ -146,11 +165,11 @@ class JobStore:
             c.execute(
                 """UPDATE jobs SET status=?, output_path=?, duration=?, stage=?,
                        error=?, meta_json=?, transcript=?, segment_json=?,
-                       results_json=? WHERE id=?""",
+                       results_json=?, batch_id=?, topic=? WHERE id=?""",
                 (job.status, job.output_path, job.duration, job.stage, job.error,
                  json.dumps(job.meta.to_dict()), job.transcript,
                  json.dumps(list(job.segment) if job.segment else None),
-                 json.dumps(job.results), job.id),
+                 json.dumps(job.results), job.batch_id, job.topic, job.id),
             )
 
     def mark_published_today(self, job_id: str) -> None:
@@ -178,4 +197,13 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         transcript=row["transcript"] or "",
         segment=tuple(seg) if seg else None,
         results=json.loads(row["results_json"] or "{}"),
+        batch_id=_col(row, "batch_id"),
+        topic=_col(row, "topic"),
     )
+
+
+def _col(row: sqlite3.Row, name: str) -> str:
+    try:
+        return row[name] or ""
+    except (IndexError, KeyError):
+        return ""

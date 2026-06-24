@@ -1,18 +1,21 @@
 """FastAPI server + mobile web UI for Daily Shorts Studio.
 
-Exposes a tiny REST API the phone page drives:
+Flow the phone page drives:
 
-    POST /api/login                 password gate (single shared password)
-    GET  /api/status                ollama/platform/today summary
-    POST /api/upload                upload today's video -> starts processing
-    GET  /api/job/{id}              poll processing/publish progress
-    POST /api/job/{id}/meta         save manually-edited title/caption/hashtags
-    POST /api/job/{id}/generate     (re)draft metadata with Ollama
-    POST /api/job/{id}/publish      publish to the selected platforms
-    GET  /api/preview/{id}          stream the rendered 9:16 mp4
+    POST /api/login                 password gate
+    GET  /api/status                ollama / platform / model summary
+    GET  /api/library               list local source videos to pick from
+    POST /api/generate              source (upload | url | local) + count
+                                    -> kicks off multi-short generation
+    GET  /api/batch/{id}            pre-render progress + the shorts as they land
+    GET  /api/job/{id}              one short's status
+    POST /api/job/{id}/meta         save edited title/caption/hashtags
+    POST /api/job/{id}/generate     redraft a short's metadata with Ollama
+    POST /api/job/{id}/publish      publish that short to selected platforms
+    GET  /api/preview/{id}          stream a short's rendered mp4
 
-Heavy work (transcribe/reframe/publish) runs on a single-worker thread pool so
-the GPU is never asked to do two renders at once and the event loop stays free.
+Heavy work (download/transcribe/reframe/publish) runs on a single-worker thread
+pool so the GPU is never double-booked and the event loop stays responsive.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -36,10 +40,12 @@ from .pipeline import StudioPipeline
 logger = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent / "web"
 COOKIE = "studio_auth"
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 
 
 def _token(password: str) -> str:
-    return hmac.new(b"daily-shorts-studio", password.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(b"daily-shorts-studio", password.encode(),
+                    hashlib.sha256).hexdigest()
 
 
 def create_app(cfg: StudioConfig | None = None) -> FastAPI:
@@ -49,12 +55,13 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     pipeline = StudioPipeline(cfg, store)
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio")
     expected = _token(cfg.app_password) if cfg.app_password else ""
+    batches: dict[str, dict] = {}  # in-memory pre-render progress per batch
 
     app = FastAPI(title="Daily Shorts Studio")
 
     # --- auth --------------------------------------------------------------
     def require_auth(request: Request) -> None:
-        if not expected:  # password gate disabled
+        if not expected:
             return
         if request.cookies.get(COOKIE) != expected:
             raise HTTPException(status_code=401, detail="not authenticated")
@@ -81,7 +88,6 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     @app.get("/api/status")
     async def status(request: Request):
         authed = (not expected) or request.cookies.get(COOKIE) == expected
-        today = store.todays_job()
         return {
             "authed": authed,
             "needs_password": bool(expected),
@@ -90,42 +96,88 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
                              if authed and pipeline.ollama.available()
                              else cfg.ollama_model),
             "platforms": list(cfg.enabled_platforms),
-            "published_today": store.published_today(),
-            "one_per_day": cfg.one_per_day,
-            "today_job": today.to_dict() if (authed and today) else None,
+            "reframe_mode": cfg.reframe_mode,
+            "default_count": cfg.shorts_per_video,
         }
 
-    # --- upload / process --------------------------------------------------
-    @app.post("/api/upload")
-    async def upload(
-        request: Request,
-        file: UploadFile = File(...),
-        auto_metadata: bool = Form(True),
-        per_platform: bool = Form(False),
+    # --- local library -----------------------------------------------------
+    @app.get("/api/library")
+    async def library(_: None = Depends(require_auth)):
+        root = cfg.library_path
+        items = []
+        if root.exists():
+            for p in sorted(root.iterdir()):
+                if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+                    items.append({"name": p.name,
+                                  "size_mb": round(p.stat().st_size / 1e6, 1)})
+        return {"dir": str(root), "videos": items}
+
+    def _resolve_local(name: str) -> Path:
+        # Only allow files directly inside the configured library (no traversal).
+        p = (cfg.library_path / Path(name).name).resolve()
+        if not p.exists() or cfg.library_path.resolve() not in p.parents:
+            raise HTTPException(404, "video not found in library")
+        return p
+
+    # --- generate shorts ---------------------------------------------------
+    @app.post("/api/generate")
+    async def generate(
+        source_type: str = Form(...),          # upload | url | local
+        url: str = Form(""),
+        name: str = Form(""),
+        count: int = Form(0),
         niche: str = Form(""),
-        title: str = Form(""),
-        caption: str = Form(""),
-        hashtags: str = Form(""),
+        file: UploadFile = File(None),
         _: None = Depends(require_auth),
     ):
-        suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
-        job = store.create("")  # get an id first to name the file
-        dest = cfg.incoming_dir / f"{job.id}{suffix}"
-        with dest.open("wb") as fh:
-            while chunk := await file.read(1024 * 1024):
-                fh.write(chunk)
-        job.source_path = str(dest)
-        if title or caption:  # user typed metadata up front -> manual
-            job.meta = VideoMeta(title=title, caption=caption,
-                                 hashtags=normalize_hashtags(hashtags),
-                                 source="manual")
-        store.update(job)
+        if source_type == "upload":
+            if not file:
+                raise HTTPException(400, "no file uploaded")
+            suffix = Path(file.filename or "src.mp4").suffix or ".mp4"
+            dest = cfg.incoming_dir / f"src_{uuid.uuid4().hex[:8]}{suffix}"
+            with dest.open("wb") as fh:
+                while chunk := await file.read(1024 * 1024):
+                    fh.write(chunk)
+            source = str(dest)
+        elif source_type == "url":
+            if not url.strip():
+                raise HTTPException(400, "no URL provided")
+            source = url.strip()
+        elif source_type == "local":
+            source = str(_resolve_local(name))
+        else:
+            raise HTTPException(400, "invalid source_type")
 
-        worker.submit(pipeline.process_job, job,
-                      auto_metadata=auto_metadata and not (title and caption),
-                      per_platform=per_platform, niche=niche)
-        return {"ok": True, "job_id": job.id}
+        n = count or cfg.shorts_per_video
+        batch_id = uuid.uuid4().hex[:12]
+        batches[batch_id] = {"stage": "starting", "done": False, "error": ""}
 
+        def on_stage(s: str) -> None:
+            if batch_id in batches:
+                batches[batch_id]["stage"] = s
+
+        def run() -> None:
+            try:
+                pipeline.generate_shorts(source, n, niche=niche,
+                                         batch_id=batch_id, on_stage=on_stage)
+            except Exception as exc:  # pragma: no cover
+                logger.exception("batch failed")
+                batches[batch_id]["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                batches[batch_id]["done"] = True
+                batches[batch_id]["stage"] = "done"
+
+        worker.submit(run)
+        return {"ok": True, "batch_id": batch_id, "count": n}
+
+    @app.get("/api/batch/{batch_id}")
+    async def get_batch(batch_id: str, _: None = Depends(require_auth)):
+        b = batches.get(batch_id, {"stage": "", "done": True, "error": ""})
+        shorts = [j.to_dict() for j in store.list_by_batch(batch_id)]
+        return {"batch_id": batch_id, "stage": b["stage"], "done": b["done"],
+                "error": b["error"], "shorts": shorts}
+
+    # --- per-short ---------------------------------------------------------
     @app.get("/api/job/{job_id}")
     async def get_job(job_id: str, _: None = Depends(require_auth)):
         job = store.get(job_id)
@@ -133,11 +185,6 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(404, "job not found")
         return job.to_dict()
 
-    @app.get("/api/jobs")
-    async def list_jobs(_: None = Depends(require_auth)):
-        return {"jobs": [j.to_dict() for j in store.list_recent()]}
-
-    # --- metadata editing --------------------------------------------------
     @app.post("/api/job/{job_id}/meta")
     async def save_meta(job_id: str, request: Request,
                         _: None = Depends(require_auth)):
@@ -157,25 +204,26 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         job = store.get(job_id)
         if not job:
             raise HTTPException(404, "job not found")
-        body = await request.json()
-        per_platform = bool(body.get("per_platform", False))
-        niche = str(body.get("niche", ""))
         if not pipeline.ollama.available():
             raise HTTPException(503, "Ollama is not reachable")
-        meta = pipeline._draft_metadata(job.transcript, per_platform, niche)
-        job.meta = meta
-        store.update(job)
-        return {"ok": True, "meta": meta.to_dict()}
+        body = await request.json()
+        niche = str(body.get("niche", ""))
+        language = pipeline._metadata_language("")
+        meta = pipeline.ollama.generate_metadata(job.transcript, None, niche,
+                                                 language)
+        if meta:
+            job.meta = meta
+            store.update(job)
+        return {"ok": True, "meta": job.meta.to_dict()}
 
-    # --- publish -----------------------------------------------------------
     @app.post("/api/job/{job_id}/publish")
     async def publish(job_id: str, request: Request,
                       _: None = Depends(require_auth)):
         job = store.get(job_id)
         if not job:
             raise HTTPException(404, "job not found")
-        if job.status != STATUS_READY and not job.output_path:
-            raise HTTPException(409, "job is not ready to publish yet")
+        if not job.output_path or job.status not in (STATUS_READY, "done"):
+            raise HTTPException(409, "short is not ready to publish yet")
         if cfg.one_per_day and store.published_today():
             raise HTTPException(429, "already published today (one_per_day is on)")
         body = await request.json()
@@ -188,7 +236,6 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         worker.submit(pipeline.publish_job, job, platforms)
         return {"ok": True, "platforms": platforms}
 
-    # --- preview -----------------------------------------------------------
     @app.get("/api/preview/{job_id}")
     async def preview(job_id: str, _: None = Depends(require_auth)):
         job = store.get(job_id)
