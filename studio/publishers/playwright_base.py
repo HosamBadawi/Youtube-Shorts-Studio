@@ -47,18 +47,21 @@ def launch_persistent(p, user_data_dir: Path, headless: bool,
 
     Falls back to bundled Chromium only if Edge isn't available.
     """
-    args = ["--disable-blink-features=AutomationControlled"]
+    # NOTE: we do NOT pass --disable-blink-features=AutomationControlled — Edge
+    # shows it in the grey "unsupported command-line flag" bar. We hide the
+    # webdriver signal with an init script instead (no flag, no banner).
+    args = []
     if profile_dir:
         args.append(f"--profile-directory={profile_dir}")
     kw: dict = dict(
         user_data_dir=str(user_data_dir),
         headless=headless,
-        chromium_sandbox=True,
+        chromium_sandbox=True,           # avoids the --no-sandbox banner
         args=args,
         ignore_default_args=[
             "--disable-extensions",
             "--disable-component-extensions-with-background-pages",
-            "--enable-automation",  # harmless no-op on current Playwright
+            "--enable-automation",       # harmless no-op on current Playwright
         ],
     )
     if headless:
@@ -68,10 +71,16 @@ def launch_persistent(p, user_data_dir: Path, headless: bool,
         args.append("--start-maximized")
         kw["no_viewport"] = True
     try:
-        return p.chromium.launch_persistent_context(channel="msedge", **kw)
+        ctx = p.chromium.launch_persistent_context(channel="msedge", **kw)
     except Exception as exc:
         logger.info("msedge channel unavailable (%s); using bundled chromium", exc)
-        return p.chromium.launch_persistent_context(**kw)
+        ctx = p.chromium.launch_persistent_context(**kw)
+    try:
+        ctx.add_init_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+    except Exception:
+        pass
+    return ctx
 
 
 @contextmanager

@@ -133,7 +133,10 @@ class SessionProvider:
             self.login_steps(page, creds)
             page.wait_for_timeout(3000)
             return self.is_logged_in(page)
-        # edge_profile / saved_session: just open the home and check.
+        # edge_profile / saved_session: open home and poll (cookies/page settle).
         page.goto(self.home_url, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
-        return self.is_logged_in(page)
+        for _ in range(5):
+            page.wait_for_timeout(1500)
+            if self.is_logged_in(page):
+                return True
+        return False

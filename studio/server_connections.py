@@ -59,6 +59,7 @@ def _has_session(cfg, platform: str) -> bool:
 def build_connections_router(cfg, store, pipeline, vault, runner, runs,
                              require_auth) -> APIRouter:
     r = APIRouter()
+    health_cache: dict[str, dict] = {}  # last health result per platform
 
     def _check_platform(platform: str) -> str:
         platform = platform.lower()
@@ -73,7 +74,14 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
             "has_session": _has_session(cfg, platform),
             "credentials": vault.status(platform),
             "is_api": platform == "youtube",
+            "edge_configured": bool(cfg.edge_user_data_dir),
+            "health": health_cache.get(platform),  # last check result (or None)
         }
+
+    def _run_health(platform: str) -> dict:
+        res = platform_health(platform, cfg, vault).to_dict()
+        health_cache[platform] = res
+        return res
 
     # --- health ------------------------------------------------------------
     @r.get("/api/health")
@@ -151,7 +159,7 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
     @r.post("/api/connections/{platform}/health")
     async def run_health(platform: str, _: None = Depends(require_auth)):
         platform = _check_platform(platform)
-        rid = _start(lambda: platform_health(platform, cfg, vault).to_dict())
+        rid = _start(lambda: _run_health(platform))
         return {"ok": True, "run_id": rid}
 
     # "Connect" = the same health run; for browser platforms it will, via the
@@ -159,7 +167,7 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
     @r.post("/api/connections/{platform}/login")
     async def run_login(platform: str, _: None = Depends(require_auth)):
         platform = _check_platform(platform)
-        rid = _start(lambda: platform_health(platform, cfg, vault).to_dict())
+        rid = _start(lambda: _run_health(platform))
         return {"ok": True, "run_id": rid}
 
     @r.get("/api/connections/run/{run_id}")

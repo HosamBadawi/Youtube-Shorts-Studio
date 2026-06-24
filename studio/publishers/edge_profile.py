@@ -142,11 +142,17 @@ def ensure_edge_closed(cfg: StudioConfig) -> bool:
         return False
     logger.info("closing Edge to free the live profile…")
     try:
-        subprocess.run(["taskkill", "/IM", "msedge.exe", "/F"], check=False,
+        subprocess.run(["taskkill", "/IM", "msedge.exe", "/F", "/T"], check=False,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2)
     except Exception:
         pass
+    # Wait until every msedge process is really gone (a lingering one keeps the
+    # profile locked -> the automated launch loads no cookies -> false logout).
+    for _ in range(20):
+        if not edge_running():
+            time.sleep(0.5)   # let the profile lock release
+            return True
+        time.sleep(0.5)
     return not edge_running()
 
 

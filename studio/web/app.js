@@ -326,8 +326,15 @@ async function loadConnections() {
 }
 
 function chip(p) {
+  // Prefer the last health-check result (it reflects edge_profile too).
+  if (p.health) {
+    return p.health.ok
+      ? `<span class="cc ok">connected${p.health.strategy ? " · " + p.health.strategy : ""}</span>`
+      : `<span class="cc bad">not connected</span>`;
+  }
   if (p.is_api) return p.has_session ? `<span class="cc ok">connected</span>` : `<span class="cc warn">not set up</span>`;
   if (p.has_session) return `<span class="cc ok">session ✓</span>`;
+  if (p.edge_configured) return `<span class="cc warn">via Edge · tap Check</span>`;
   if (p.credentials.has_credentials) return `<span class="cc warn">credentials only</span>`;
   return `<span class="cc bad">not connected</span>`;
 }
