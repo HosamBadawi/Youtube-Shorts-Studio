@@ -1,0 +1,59 @@
+# =============================================================================
+# Adaptive Vertical Reframing - example configuration
+# Every key is OPTIONAL; omitted keys fall back to the defaults shown here.
+# Load with: ReframeConfig.load("config.yaml")  (CLI does this for you)
+# =============================================================================
+
+# Force a specific mode for ALL clips, bypassing auto-classification.
+# One of: face_focus | active_speaker | smart_crop | scene_aware |
+#         blur_background | mirror_background | dynamic_canvas | no_crop
+# Leave null (the default) to let the classifier choose per clip.
+force_mode: null
+
+output:
+  width: 1080
+  height: 1920
+  crf: 18              # 0 (lossless) .. 51 (worst). 18 is visually lossless-ish.
+  preset: medium       # ultrafast .. veryslow (x264 speed/quality tradeoff)
+  audio_bitrate: 192k
+
+analysis:
+  sample_fps: 5.0              # frames/sec sampled during the analysis pass
+  face_min_confidence: 0.5
+  mediapipe_model: 1           # 0 = short-range (<2m), 1 = full-range
+  use_pyscenedetect: true      # falls back to histogram diff if unavailable
+  scene_diff_threshold: 0.35
+
+# Parameters for the FOCUS strategies (face_focus / active_speaker / smart_crop).
+focus:
+  max_zoom: 1.6                # cap on how far a focus crop may zoom in
+  target_face_frac: 0.34       # desired face height as a fraction of frame height
+  min_cutoff: 0.6              # One-Euro filter: lower = smoother, more lag
+  beta: 0.02                   # One-Euro filter: higher = more responsive to speed
+  safe_margin: 0.06            # keep the subject this far from crop edges
+  speaker_switch_margin: 0.12  # hysteresis before switching active speaker
+  speaker_min_hold_s: 0.6      # min seconds to stay on a speaker before switching
+
+# Parameters for the PRESERVATION strategies.
+preserve:
+  blur_ksize: 75               # gaussian kernel for blurred-background fill
+  bg_zoom: 1.18                # zoom applied to the background fill layer
+  canvas_margin: 0.05          # inner margin for dynamic canvas / padding
+  letterbox_color: [8, 8, 8]   # BGR fill color for letterboxing
+
+# Thresholds that drive automatic classification. The classifier is
+# PRESERVATION-BIASED: it only commits to a face-centered crop when the clip
+# looks like a genuinely static talking-head shot.
+classifier:
+  vertical_aspect_max: 0.62        # source already this vertical -> no_crop
+  high_cut_rate_per_min: 14.0      # editing density that signals "leave it alone"
+  high_global_motion: 0.16         # camera/scene motion that resists cropping
+  high_overlay_score: 0.42         # on-screen text/graphics density
+  multi_subject_count: 1.6         # avg simultaneous faces -> multi-subject
+  preserve_pressure_threshold: 1.0 # summed pressure at/above this -> preserve
+  min_face_present_ratio: 0.55     # face must be visible this fraction of time
+  max_face_motion_for_static: 0.18 # face movement below this = "static" shot
+  min_face_area_for_focus: 0.012   # face smaller than this -> not worth focusing
+  overlay_force_nocrop: 0.55       # heavy overlays -> force no_crop (legibility)
+  scene_aware_min_scenes: 3        # >= this many calm scenes -> scene_aware
+  scene_aware_max_motion: 0.16

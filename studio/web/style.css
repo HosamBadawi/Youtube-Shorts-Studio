@@ -1,0 +1,121 @@
+:root {
+  --bg: #0b0d12;
+  --card: #151922;
+  --card2: #1d2230;
+  --fg: #e8ebf2;
+  --muted: #8b93a7;
+  --accent: #6c8cff;
+  --accent2: #4f6fe0;
+  --ok: #36d399;
+  --err: #ff6b6b;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+header {
+  position: sticky; top: 0; z-index: 5;
+  padding: 14px 16px 10px;
+  background: linear-gradient(180deg, var(--bg) 70%, transparent);
+  backdrop-filter: blur(6px);
+}
+header h1 { margin: 0; font-size: 20px; }
+.statusbar { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.statusbar .dot { display: inline-flex; align-items: center; gap: 4px; }
+.statusbar .on { color: var(--ok); }
+.statusbar .off { color: var(--err); }
+
+main { padding: 8px 14px 28px; max-width: 560px; margin: 0 auto; }
+
+.card {
+  background: var(--card);
+  border: 1px solid #232838;
+  border-radius: var(--radius);
+  padding: 18px 16px;
+  margin: 12px 0;
+}
+.card h2 { margin: 0 0 14px; font-size: 18px; }
+.card h3 { margin: 18px 0 8px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+
+.hidden { display: none !important; }
+
+label.field { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+input[type=text], input[type=password], textarea {
+  width: 100%; margin-top: 6px;
+  background: var(--card2); color: var(--fg);
+  border: 1px solid #2c3242; border-radius: 10px;
+  padding: 12px; font-size: 16px; font-family: inherit;
+}
+textarea { resize: vertical; }
+.hint { color: var(--muted); font-size: 12px; }
+
+.filepick {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 110px; border: 2px dashed #343b50; border-radius: 12px;
+  background: var(--card2); color: var(--muted); text-align: center;
+  cursor: pointer; padding: 16px; font-size: 15px;
+}
+.filepick input { display: none; }
+.filepick.has-file { border-color: var(--accent); color: var(--fg); }
+
+.switch { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 14px; }
+.switch input { width: 20px; height: 20px; accent-color: var(--accent); }
+
+details { margin-top: 14px; }
+summary { color: var(--accent); font-size: 14px; cursor: pointer; }
+
+button {
+  width: 100%; margin-top: 16px; padding: 14px;
+  border: none; border-radius: 12px; font-size: 16px; font-weight: 600;
+  cursor: pointer; transition: transform .05s ease, opacity .2s;
+}
+button:active { transform: scale(.985); }
+button:disabled { opacity: .5; }
+.primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: white; }
+.ghost { background: var(--card2); color: var(--fg); border: 1px solid #2c3242; }
+.row { display: flex; gap: 10px; }
+.row button { margin-top: 16px; }
+
+video {
+  width: 100%; max-height: 60vh; border-radius: 12px; background: black;
+  aspect-ratio: 9 / 16; object-fit: contain;
+}
+
+.platforms { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pf {
+  display: flex; align-items: center; gap: 8px; padding: 12px;
+  background: var(--card2); border: 1px solid #2c3242; border-radius: 10px;
+  font-size: 14px; cursor: pointer;
+}
+.pf input { width: 18px; height: 18px; accent-color: var(--accent); }
+.pf.disabled { opacity: .5; }
+
+.spinner {
+  width: 38px; height: 38px; margin: 8px auto 14px;
+  border: 4px solid #2c3242; border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.stage { text-align: center; color: var(--muted); }
+
+.err { color: var(--err); font-size: 13px; margin: 10px 0 0; min-height: 1em; }
+
+.result {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px; background: var(--card2); border-radius: 10px; margin-bottom: 8px;
+  font-size: 14px;
+}
+.result .name { font-weight: 600; text-transform: capitalize; }
+.result .ok { color: var(--ok); }
+.result .bad { color: var(--err); }
+.result a { color: var(--accent); text-decoration: none; }
+
+footer { text-align: center; color: var(--muted); font-size: 11px; padding: 10px 0 18px; }

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d12" />
+  <title>Daily Shorts Studio</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>🎬 Daily Shorts</h1>
+    <div id="statusbar" class="statusbar"></div>
+  </header>
+
+  <main>
+    <!-- LOGIN -->
+    <section id="login" class="card hidden">
+      <h2>Sign in</h2>
+      <input id="password" type="password" placeholder="App password" autocomplete="current-password" />
+      <button id="loginBtn" class="primary">Unlock</button>
+      <p id="loginErr" class="err"></p>
+    </section>
+
+    <!-- UPLOAD -->
+    <section id="upload" class="card hidden">
+      <h2>Today's clip</h2>
+      <label class="filepick" id="filepick">
+        <input id="file" type="file" accept="video/*" />
+        <span id="fileLabel">Tap to choose a video</span>
+      </label>
+
+      <label class="field">Niche / topic <span class="hint">(helps the AI captions)</span>
+        <input id="niche" type="text" placeholder="e.g. fitness tips, football, AI news" />
+      </label>
+
+      <label class="switch">
+        <input id="autoMeta" type="checkbox" checked />
+        <span>Let Ollama write title / caption / hashtags</span>
+      </label>
+      <label class="switch">
+        <input id="perPlatform" type="checkbox" />
+        <span>Tailor captions per platform</span>
+      </label>
+
+      <details>
+        <summary>Or write it myself now</summary>
+        <label class="field">Title <input id="mTitle" type="text" /></label>
+        <label class="field">Caption <textarea id="mCaption" rows="3"></textarea></label>
+        <label class="field">Hashtags <input id="mTags" type="text" placeholder="#shorts #viral" /></label>
+      </details>
+
+      <button id="uploadBtn" class="primary">Upload &amp; prepare</button>
+      <p id="uploadErr" class="err"></p>
+    </section>
+
+    <!-- PROCESSING -->
+    <section id="processing" class="card hidden">
+      <h2>Preparing…</h2>
+      <div class="spinner"></div>
+      <p id="stage" class="stage">starting…</p>
+    </section>
+
+    <!-- REVIEW -->
+    <section id="review" class="card hidden">
+      <h2>Review &amp; publish</h2>
+      <video id="preview" controls playsinline></video>
+      <p id="segNote" class="hint"></p>
+
+      <label class="field">Title <input id="rTitle" type="text" /></label>
+      <label class="field">Caption <textarea id="rCaption" rows="4"></textarea></label>
+      <label class="field">Hashtags <input id="rTags" type="text" /></label>
+
+      <div class="row">
+        <button id="regenBtn" class="ghost">✨ Regenerate with AI</button>
+        <button id="saveMetaBtn" class="ghost">Save edits</button>
+      </div>
+
+      <h3>Publish to</h3>
+      <div id="platforms" class="platforms"></div>
+
+      <button id="publishBtn" class="primary">🚀 Publish now</button>
+      <p id="publishErr" class="err"></p>
+    </section>
+
+    <!-- RESULTS -->
+    <section id="results" class="card hidden">
+      <h2>Results</h2>
+      <div id="resultList"></div>
+      <button id="newBtn" class="ghost">New upload</button>
+    </section>
+  </main>
+
+  <footer>self-hosted on your PC · reachable via Cloudflare</footer>
+  <script src="/static/app.js"></script>
+</body>
+</html>

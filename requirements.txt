@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Adaptive Vertical Reframing subsystem - runtime dependencies
+# Python 3.12+
+# ---------------------------------------------------------------------------
+# Core numerics / video I/O
+numpy>=1.26,<3
+# NOTE: Smart Crop's saliency path uses cv2.saliency, which ships ONLY in the
+# contrib build. Install opencv-contrib-python (NOT plain opencv-python) or
+# Smart Crop silently falls back to a center-weighted heuristic.
+opencv-contrib-python>=4.9
+
+# Face / landmark detection (optional but recommended).
+# Falls back to OpenCV Haar cascades automatically if absent or incompatible.
+mediapipe>=0.10.9
+
+# Config validation (used only by config.py / the CLI).
+pydantic>=2.5
+pyyaml>=6.0
+
+# Scene detection (optional). Falls back to a histogram-difference detector
+# if not importable.
+scenedetect>=0.6.3
+
+# ffmpeg / ffprobe are required on PATH (system package, not pip-installable):
+#   apt-get install ffmpeg     |     brew install ffmpeg

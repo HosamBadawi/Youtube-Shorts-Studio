@@ -1,0 +1,60 @@
+# ============================================================================
+# SECURITY-CRITICAL: never commit live logins, tokens, personal config or media.
+# (Git does NOT support inline comments after a pattern — keep them above.)
+# ============================================================================
+
+# Downloads, rendered shorts, sessions (LOGIN COOKIES!), database
+workspace/
+
+# YouTube OAuth client secret + token
+secrets/
+
+# Your live config (has app_password) — ship studio.example.yaml instead
+studio.yaml
+
+# Any stray credential files
+*.session
+*.token
+*_token.json
+*client_secret*.json
+
+# Local Claude settings (machine-specific)
+.claude/settings.local.json
+
+# Downloaded / produced media
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.m4a
+*.mp3
+*.ass
+*.srt
+
+# Throwaway test file
+remote_access_test.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Models / caches (large, re-downloadable)
+*.bin
+*.pt
+*.onnx
+.cache/

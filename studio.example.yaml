@@ -1,0 +1,72 @@
+# =============================================================================
+# Daily Shorts Studio - configuration
+# Copy to `studio.yaml` and edit. Every key is optional (defaults shown).
+# Any key can also be overridden by an env var: STUDIO_<KEY_UPPERCASE>.
+# =============================================================================
+
+# Where uploads, renders, browser sessions and the database live.
+workspace: ./workspace
+host: 0.0.0.0
+port: 8765
+
+# --- ACCESS CONTROL --------------------------------------------------------
+# The app is reachable from the public internet through the Cloudflare tunnel,
+# so this password is your only gate. CHANGE IT. Set to "" only on a trusted
+# LAN / Tailscale where no gate is needed.
+app_password: change-me
+
+# --- REMOTE ACCESS (Cloudflare) -------------------------------------------
+# quick = free ephemeral https URL (no account; URL changes each run)
+# named = stable URL via a tunnel token from the Zero Trust dashboard
+# off   = bind locally only
+cloudflare_mode: quick
+cloudflare_token: ""
+cloudflared_bin: cloudflared
+
+# --- LOCAL AI (Ollama on this PC) -----------------------------------------
+ollama_url: http://localhost:11434
+ollama_model: auto            # auto = pick the best installed model; or pin one
+ollama_enabled: true
+ollama_think: false           # keep false for qwen3 / deepseek-r1 thinking models
+ollama_timeout: 240           # raise for big models (35B) that spill to CPU
+metadata_language: auto       # auto = match the video's language; or "Arabic"/"English"
+
+# --- TRANSCRIPTION (Whisper) ----------------------------------------------
+whisper_model: base           # tiny | base | small | medium | large-v3
+whisper_device: auto          # auto | cpu | cuda
+whisper_enabled: true
+whisper_language: auto        # force e.g. "ar" for far better Arabic accuracy
+
+# --- SHORT SELECTION -------------------------------------------------------
+target_short_seconds: 55         # length the AI aims for when cutting a short
+min_short_seconds: 50            # hard floor: a short is never shorter than this
+max_short_seconds: 60            # hard ceiling: a short is never longer than this
+keep_whole_if_under_seconds: 90  # shorter sources are used as-is (no cutting)
+
+# --- REFRAMING TECHNIQUE ---------------------------------------------------
+# auto = classify per clip. Or force one for every short:
+#   crop_blur        = subject-tracked crop + blur margins (recommended hybrid)
+#   blur_background  = full scene centered, blurred top/bottom ("blanking")
+#   face_focus       = tight crop on the face, fills the frame (no blanking)
+#   active_speaker | smart_crop | mirror_background | dynamic_canvas | no_crop
+reframe_mode: auto
+
+# --- BURNED-IN CAPTIONS (TikTok style) -------------------------------------
+captions_enabled: true
+caption_font: Arial              # any installed font (needs Arabic glyphs for AR)
+caption_fontsize: 96
+caption_highlight: "#FFE000"     # color of the word currently being spoken
+caption_base_color: "#FFFFFF"
+caption_position: lower          # lower | center | bottom
+caption_max_words: 4             # how many words show on screen at once
+
+# --- PUBLISHING ------------------------------------------------------------
+enabled_platforms: [youtube, instagram, tiktok, facebook]
+one_per_day: true             # block a 2nd publish on the same calendar day
+playwright_headless: true     # false = watch the browser automation run
+
+# YouTube Data API v3 (the only platform with an official free API).
+youtube_client_secret: ./secrets/youtube_client_secret.json
+youtube_token: ./secrets/youtube_token.json
+youtube_privacy: public       # public | unlisted | private
+youtube_category_id: "22"     # 22 = People & Blogs

@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# Daily Shorts Studio - dependencies for the web app / uploader layer.
+# Install on the host PC (the 3060 Ti machine) on top of the reframe deps:
+#   pip install -r requirements.txt -r requirements-studio.txt
+#   python -m playwright install chromium
+# Also install on PATH: ffmpeg + ffprobe, and the `cloudflared` binary.
+# ---------------------------------------------------------------------------
+
+# Web server
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9        # required by FastAPI for file uploads
+
+# Transcription (GPU-accelerated on your 3060 Ti via CUDA).
+faster-whisper>=1.0
+
+# Browser automation for Instagram / TikTok / Facebook.
+playwright>=1.42
+
+# Arabic/RTL caption layout: measure word widths (Pillow) with correct joined
+# glyphs (arabic-reshaper) so each word can be positioned individually.
+Pillow>=10.0
+arabic-reshaper>=3.0
+
+# Download source videos from a URL (YouTube etc.). aria2c (system binary) is
+# used automatically when on PATH for much faster multi-connection downloads.
+yt-dlp>=2024.0
+
+# YouTube Data API v3 (official, free).
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
+
+# Config (already pulled by the reframe layer, listed here for standalone use).
+pyyaml>=6.0

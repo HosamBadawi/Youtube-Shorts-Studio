@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adaptive-reframe"
+version = "0.1.0"
+description = "Adaptive vertical (9:16) video reframing with automatic per-clip strategy selection that prioritizes preserving original composition over forced face crops."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Adaptive Reframe" }]
+keywords = ["video", "reframing", "vertical", "shorts", "opencv", "9:16", "saliency"]
+
+dependencies = [
+    "numpy>=1.26,<3",
+    "opencv-contrib-python>=4.9",
+    "mediapipe>=0.10.9",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "scenedetect>=0.6.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+# Minimal install for environments that only drive the pipeline
+# programmatically (no YAML config / no CLI) and supply ReframeParams directly.
+# pydantic + pyyaml are then unnecessary because config.py is never imported.
+core = ["numpy>=1.26,<3", "opencv-contrib-python>=4.9", "mediapipe>=0.10.9"]
+# Daily Shorts Studio: phone web app + Ollama/Whisper + multi-platform publish.
+# See requirements-studio.txt / STUDIO_README.md.
+studio = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "faster-whisper>=1.0",
+    "playwright>=1.42",
+    "google-api-python-client>=2.100",
+    "google-auth-oauthlib>=1.2",
+    "google-auth-httplib2>=0.2",
+]
+
+[project.scripts]
+adaptive-reframe = "adaptive_reframe.cli:main"
+daily-shorts-studio = "studio.__main__:main"
+
+[tool.setuptools]
+packages = ["adaptive_reframe", "studio", "studio.publishers"]
+
+[tool.setuptools.package-data]
+studio = ["web/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
