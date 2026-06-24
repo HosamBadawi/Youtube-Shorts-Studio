@@ -90,6 +90,17 @@
             </div>
           </div>
 
+          <div class="grid2">
+            <div>
+              <label class="lbl">Min length <span class="muted small">(sec)</span></label>
+              <input id="lenMin" type="number" min="5" max="180" value="50" />
+            </div>
+            <div>
+              <label class="lbl">Max length <span class="muted small">(sec)</span></label>
+              <input id="lenMax" type="number" min="5" max="180" value="60" />
+            </div>
+          </div>
+
           <button id="genBtn" class="btn primary block">✂️ Generate shorts</button>
           <div id="genProgress" class="dl-progress hidden">
             <div class="spinner"></div><span id="genStage" class="muted small">starting…</span>

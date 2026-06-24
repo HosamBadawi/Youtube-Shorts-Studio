@@ -183,11 +183,20 @@ class StudioPipeline:
     # MULTI-SHORT  (one long video / URL -> N reviewable short Jobs)
     # ======================================================================
     def generate_shorts(self, source: str, count: int, niche: str = "",
-                        batch_id: str = "", on_stage=None) -> list[str]:
+                        batch_id: str = "", on_stage=None,
+                        min_s: float | None = None,
+                        max_s: float | None = None) -> list[str]:
         """Download (if URL) -> transcribe -> pick ``count`` distinct segments ->
         render each into its own READY Job (reframe + captions + per-segment
         metadata). Returns the created job ids. ``on_stage(str)`` reports the
-        pre-render progress so the web UI can show it."""
+        pre-render progress so the web UI can show it. ``min_s``/``max_s`` override
+        the configured short-length bounds (target = their midpoint)."""
+        min_len = min_s if min_s else self.cfg.min_short_seconds
+        max_len = max_s if max_s else self.cfg.max_short_seconds
+        if min_len > max_len:
+            min_len, max_len = max_len, min_len
+        target_len = (self.cfg.target_short_seconds if (min_s is None and max_s is None)
+                      else (min_len + max_len) / 2.0)
         from .downloader import download, is_url, next_index
 
         def stage(s: str) -> None:
@@ -217,11 +226,10 @@ class StudioPipeline:
         segs: list[tuple[float, float, str]] = []
         if tr.available:
             segs = self.ollama.pick_segments(tr.timestamped(), duration, count,
-                                             self.cfg.target_short_seconds)
+                                             target_len)
         if not segs:  # no transcript / model -> at least one default window
-            segs = [(0.0, min(self.cfg.target_short_seconds, duration), "")]
-        segs = [(*_enforce_bounds((s, e), self.cfg.min_short_seconds,
-                                  self.cfg.max_short_seconds, duration), topic)
+            segs = [(0.0, min(target_len, duration), "")]
+        segs = [(*_enforce_bounds((s, e), min_len, max_len, duration), topic)
                 for s, e, topic in segs]
         language = self._metadata_language(tr.language)
         longstem = Path(source).stem  # e.g. "1" -> shorts "1_1.mp4", "1_2.mp4"…

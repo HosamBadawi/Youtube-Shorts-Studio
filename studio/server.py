@@ -100,6 +100,8 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             "platforms": list(cfg.enabled_platforms),
             "reframe_mode": cfg.reframe_mode,
             "default_count": cfg.shorts_per_video,
+            "length_min": cfg.min_short_seconds,
+            "length_max": cfg.max_short_seconds,
         }
 
     # --- local library -----------------------------------------------------
@@ -174,6 +176,8 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         name: str = Form(""),
         count: int = Form(0),
         niche: str = Form(""),
+        min_seconds: float = Form(0),
+        max_seconds: float = Form(0),
         file: UploadFile = File(None),
         _: None = Depends(require_auth),
     ):
@@ -199,6 +203,11 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(400, "invalid source_type")
 
         n = count or cfg.shorts_per_video
+        # Optional length range (seconds); target = midpoint. 0 -> use config.
+        mn = min_seconds if min_seconds > 0 else None
+        mx = max_seconds if max_seconds > 0 else None
+        if mn and mx and mn > mx:
+            mn, mx = mx, mn
         batch_id = uuid.uuid4().hex[:12]
         batches[batch_id] = {"stage": "starting", "done": False, "error": ""}
 
@@ -209,7 +218,8 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         def run() -> None:
             try:
                 pipeline.generate_shorts(source, n, niche=niche,
-                                         batch_id=batch_id, on_stage=on_stage)
+                                         batch_id=batch_id, on_stage=on_stage,
+                                         min_s=mn, max_s=mx)
             except Exception as exc:  # pragma: no cover
                 logger.exception("batch failed")
                 batches[batch_id]["error"] = f"{type(exc).__name__}: {exc}"

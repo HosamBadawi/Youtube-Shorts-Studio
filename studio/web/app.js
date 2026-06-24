@@ -45,6 +45,8 @@ async function boot() {
     ? `<span class="on">●</span> ${esc(s.ollama_model)} · ${esc(s.reframe_mode)}`
     : `<span class="off">●</span> Ollama offline`;
   $("#count").value = s.default_count || 3;
+  if (s.length_min) $("#lenMin").value = Math.round(s.length_min);
+  if (s.length_max) $("#lenMax").value = Math.round(s.length_max);
   go("download");
 }
 function showLogin() { $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); }
@@ -140,6 +142,8 @@ $("#genBtn").onclick = async () => {
   fd.append("source_type", STATE.src);
   fd.append("count", $("#count").value || "3");
   fd.append("niche", $("#niche").value);
+  fd.append("min_seconds", $("#lenMin").value || "0");
+  fd.append("max_seconds", $("#lenMax").value || "0");
   if (STATE.src === "upload") {
     const f = $("#file").files[0];
     if (!f) { $("#genErr").textContent = "Choose a video"; return; }
