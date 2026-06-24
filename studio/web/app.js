@@ -351,15 +351,26 @@ $("#keySave").onclick = async () => {
     toast("API key saved 🔒"); loadModels();
   } catch (e) { $("#modelMsg").textContent = e.message; }
 };
+function chosenModel() {
+  const m = $("#modelSel").value;
+  return m === "__custom__" ? $("#modelCustom").value.trim() : m;
+}
 $("#modelSave").onclick = async () => {
   $("#modelMsg").textContent = "";
-  let model = $("#modelSel").value;
-  if (model === "__custom__") model = $("#modelCustom").value.trim();
   try {
-    const r = await api("/api/models/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, model }) });
+    const r = await api("/api/models/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, model: chosenModel() }) });
     toast(r.available ? "Model set ✓" : "Set — but not reachable (check key/Ollama)");
     boot(); loadModels();
   } catch (e) { $("#modelMsg").textContent = e.message; }
+};
+$("#modelTest").onclick = async () => {
+  const msg = $("#modelMsg");
+  msg.className = "status-line"; msg.innerHTML = `<span class="spinner"></span>testing…`;
+  try {
+    const r = await api("/api/models/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, model: chosenModel() }) });
+    msg.className = "status-line" + (r.ok ? "" : " bad");
+    msg.textContent = r.ok ? `✅ replied: "${r.reply}"` : "❌ " + r.error;
+  } catch (e) { msg.className = "status-line bad"; msg.textContent = e.message; }
 };
 
 // ====================================================================

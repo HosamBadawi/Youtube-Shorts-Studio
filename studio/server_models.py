@@ -11,8 +11,9 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
-from .llm import CLOUD_MODELS, CLOUD_PROVIDERS, OllamaClient, make_llm
+from .llm import CLOUD_MODELS, CLOUD_PROVIDERS, CloudLLM, OllamaClient, make_llm
 
 PROVIDERS = ("ollama",) + CLOUD_PROVIDERS
 
@@ -102,6 +103,30 @@ def build_models_router(cfg, pipeline, vault, require_auth) -> APIRouter:
         if cfg.llm_provider == provider:        # refresh the active client
             pipeline.llm = make_llm(cfg, vault)
         return {"ok": True, "provider": provider, "has_key": True}
+
+    @r.post("/api/models/test")
+    async def test_model(request: Request, _: None = Depends(require_auth)):
+        body = await request.json()
+        provider = str(body.get("provider", cfg.llm_provider)).lower()
+        model = str(body.get("model", "")).strip()
+        if provider == "ollama":
+            client = OllamaClient(cfg.ollama_url, model or cfg.ollama_model,
+                                  cfg.ollama_enabled, timeout=30)
+        elif provider in CLOUD_PROVIDERS:
+            key = (vault.get_api_key(provider)
+                   if (vault and vault.enabled) else "")
+            client = CloudLLM(provider, model, key, timeout=30)
+        else:
+            raise HTTPException(400, "unknown provider")
+        if not client.available():
+            return {"ok": False, "error": "not reachable — check the API key, "
+                                          "the model id, or that Ollama is running"}
+        reply = await run_in_threadpool(
+            client._generate, "Reply with exactly: OK", False)
+        if reply and reply.strip():
+            return {"ok": True, "reply": reply.strip()[:140]}
+        return {"ok": False, "error": "no reply (wrong key/model, or a thinking "
+                                      "model returned empty)"}
 
     @r.delete("/api/models/key/{provider}")
     async def del_key(provider: str, _: None = Depends(require_auth)):

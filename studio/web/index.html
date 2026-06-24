@@ -118,6 +118,11 @@
         <div id="pwBanner" class="banner hidden">⚠️ Your app password is still the default — change <code>app_password</code> in studio.yaml.</div>
 
         <div class="panel">
+          <div class="section-head" style="margin-top:0"><h2>Server health</h2><button id="healthRefresh" class="btn ghost tiny">↻</button></div>
+          <div id="healthChecks" class="list"></div>
+        </div>
+
+        <div class="panel" style="margin-top:14px">
           <div class="section-head" style="margin-top:0"><h2>AI model</h2><span id="modelChip" class="cc"></span></div>
           <p class="muted small">The model that writes captions and picks the highlights. Local Ollama is free; cloud providers need an API key.</p>
           <label class="lbl">Provider</label>
@@ -134,8 +139,11 @@
           <label class="lbl" style="margin-top:12px">Model</label>
           <select id="modelSel" class="select"></select>
           <input id="modelCustom" type="text" class="hidden" placeholder="custom model id" style="margin-top:8px" />
-          <button id="modelSave" class="btn primary block">Use this model</button>
-          <p id="modelMsg" class="err"></p>
+          <div class="row" style="margin-top:14px">
+            <button id="modelTest" class="btn ghost">🧪 Test</button>
+            <button id="modelSave" class="btn primary">Use this model</button>
+          </div>
+          <p id="modelMsg" class="status-line"></p>
         </div>
 
         <div class="section-head"><h2>Platforms</h2></div>
