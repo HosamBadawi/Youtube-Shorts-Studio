@@ -133,6 +133,10 @@ class StudioConfig:
     # If Edge is open when automation needs the profile, close it automatically
     # (so a remote publish isn't blocked by a profile lock).
     edge_close_if_running: bool = False
+    # After an interactive health/connect check that closed Edge, reopen it so
+    # your everyday browser comes back. (Not done after a publish, to avoid the
+    # browser flapping open/closed between platforms.)
+    edge_reopen_after: bool = False
 
     # --- credential vault (encrypted at rest) -------------------------------
     vault_db: str = "./secrets/vault.db"

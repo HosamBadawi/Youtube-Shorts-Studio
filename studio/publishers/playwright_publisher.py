@@ -101,7 +101,18 @@ class PlaywrightPublisher:
     # --- health -------------------------------------------------------------
     def health(self) -> HealthStatus:
         try:
-            with self.provider.page(headless=True, viewport=(1280, 900)):
+            return self._health()
+        finally:
+            # Bring the user's Edge back after an interactive check that closed
+            # it (publish deliberately doesn't, to avoid flapping).
+            if self.cfg.edge_use_live_profile and self.cfg.edge_reopen_after:
+                from . import edge_profile
+                edge_profile.reopen_edge(self.cfg)
+
+    def _health(self) -> HealthStatus:
+        try:
+            with self.provider.page(headless=self.cfg.playwright_headless,
+                                    viewport=(1280, 900)):
                 return HealthStatus(self.name, True, "logged in",
                                     strategy=self.provider.winning,
                                     checked_at=time.time())

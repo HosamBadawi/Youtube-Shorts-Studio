@@ -150,6 +150,26 @@ def ensure_edge_closed(cfg: StudioConfig) -> bool:
     return not edge_running()
 
 
+def reopen_edge(cfg: StudioConfig) -> None:
+    """Relaunch Edge normally (detached) so the user's browser comes back after
+    an automation that closed it. Best-effort."""
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ]
+    for exe in candidates:
+        if Path(exe).exists():
+            try:
+                subprocess.Popen([exe], close_fds=True)
+                return
+            except Exception:
+                pass
+    try:
+        subprocess.Popen(["cmd", "/c", "start", "microsoft-edge:"])
+    except Exception:
+        pass
+
+
 def open_context(p, cfg: StudioConfig, headless: bool,
                  viewport: tuple[int, int] | None):
     """Launch an msedge context using the live profile (if configured) or a
