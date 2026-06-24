@@ -177,31 +177,24 @@ def open_context(p, cfg: StudioConfig, headless: bool,
     if not available(cfg):
         return None
     profile = cfg.edge_profile_dir or "Default"
-    vp = {"width": viewport[0], "height": viewport[1]} if viewport else None
 
     if cfg.edge_use_live_profile:
         if not ensure_edge_closed(cfg):
             logger.warning("edge_use_live_profile: Edge is open — close it (or "
                            "set edge_close_if_running). Falling through.")
             return None
-        user_data = str(Path(cfg.edge_user_data_dir).expanduser())
+        user_data = Path(cfg.edge_user_data_dir).expanduser()
     else:
         work_root = prepare_copy(cfg)
         if work_root is None:
             return None
-        user_data = str(work_root)
+        user_data = work_root
 
+    from .playwright_base import launch_persistent
     try:
-        return p.chromium.launch_persistent_context(
-            user_data_dir=user_data,
-            channel="msedge",
-            headless=headless,
-            viewport=vp,
-            args=[f"--profile-directory={profile}", "--no-first-run",
-                  "--no-default-browser-check",
-                  "--disable-blink-features=AutomationControlled"],
-            ignore_default_args=["--enable-automation"],
-        )
+        return launch_persistent(p, user_data, headless,
+                                 viewport=(viewport or (1280, 900)),
+                                 profile_dir=profile)
     except Exception as exc:
         logger.warning("edge msedge launch failed (%s); falling through", exc)
         return None

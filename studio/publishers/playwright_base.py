@@ -35,20 +35,43 @@ def _import_sync_playwright():
 
 
 def launch_persistent(p, user_data_dir: Path, headless: bool,
-                      viewport: tuple[int, int] | None = None):
-    """Launch a persistent context, preferring the installed **Edge** (the same
-    browser the user knows, and the one edge_profile reuse uses) and falling back
-    to Playwright's bundled Chromium only if Edge isn't available."""
-    vp = {"width": viewport[0], "height": viewport[1]} if viewport else None
-    common = dict(user_data_dir=str(user_data_dir), headless=headless,
-                  viewport=vp, args=["--disable-blink-features=AutomationControlled"])
+                      viewport: tuple[int, int] | None = None,
+                      profile_dir: str | None = None):
+    """Launch a persistent context that feels like the user's normal **Edge**:
+
+    - ``chromium_sandbox=True`` so Playwright doesn't add ``--no-sandbox`` (which
+      shows the yellow "unsupported command-line flag" banner).
+    - removes ``--disable-extensions`` / ``--disable-component-extensions-…`` so
+      the profile's installed extensions load.
+    - non-headless opens **maximized** with ``no_viewport=True``.
+
+    Falls back to bundled Chromium only if Edge isn't available.
+    """
+    args = ["--disable-blink-features=AutomationControlled"]
+    if profile_dir:
+        args.append(f"--profile-directory={profile_dir}")
+    kw: dict = dict(
+        user_data_dir=str(user_data_dir),
+        headless=headless,
+        chromium_sandbox=True,
+        args=args,
+        ignore_default_args=[
+            "--disable-extensions",
+            "--disable-component-extensions-with-background-pages",
+            "--enable-automation",  # harmless no-op on current Playwright
+        ],
+    )
+    if headless:
+        if viewport:
+            kw["viewport"] = {"width": viewport[0], "height": viewport[1]}
+    else:
+        args.append("--start-maximized")
+        kw["no_viewport"] = True
     try:
-        return p.chromium.launch_persistent_context(
-            channel="msedge", ignore_default_args=["--enable-automation"],
-            **common)
+        return p.chromium.launch_persistent_context(channel="msedge", **kw)
     except Exception as exc:
         logger.info("msedge channel unavailable (%s); using bundled chromium", exc)
-        return p.chromium.launch_persistent_context(**common)
+        return p.chromium.launch_persistent_context(**kw)
 
 
 @contextmanager
