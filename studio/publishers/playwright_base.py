@@ -34,6 +34,23 @@ def _import_sync_playwright():
     return sync_playwright
 
 
+def launch_persistent(p, user_data_dir: Path, headless: bool,
+                      viewport: tuple[int, int] | None = None):
+    """Launch a persistent context, preferring the installed **Edge** (the same
+    browser the user knows, and the one edge_profile reuse uses) and falling back
+    to Playwright's bundled Chromium only if Edge isn't available."""
+    vp = {"width": viewport[0], "height": viewport[1]} if viewport else None
+    common = dict(user_data_dir=str(user_data_dir), headless=headless,
+                  viewport=vp, args=["--disable-blink-features=AutomationControlled"])
+    try:
+        return p.chromium.launch_persistent_context(
+            channel="msedge", ignore_default_args=["--enable-automation"],
+            **common)
+    except Exception as exc:
+        logger.info("msedge channel unavailable (%s); using bundled chromium", exc)
+        return p.chromium.launch_persistent_context(**common)
+
+
 @contextmanager
 def browser_session(profile_dir: Path, headless: bool = True,
                     viewport: tuple[int, int] = (412, 915)):
@@ -70,11 +87,8 @@ def capture_login(profile_dir: Path, start_url: str, platform: str) -> bool:
     print("  2. When you're fully logged in, just CLOSE the browser window.")
     print("  The session is saved automatically.\n")
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir), headless=False,
-            viewport={"width": 412, "height": 915},
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        context = launch_persistent(p, profile_dir, headless=False,
+                                    viewport=(1180, 820))
         page = context.pages[0] if context.pages else context.new_page()
         try:
             page.goto(start_url, wait_until="domcontentloaded")

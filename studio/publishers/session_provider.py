@@ -21,7 +21,7 @@ from contextlib import contextmanager
 
 from ..config import StudioConfig
 from . import edge_profile
-from .playwright_base import _import_sync_playwright
+from .playwright_base import _import_sync_playwright, launch_persistent
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +115,10 @@ class SessionProvider:
             return edge_profile.open_context(p, self.cfg, headless, viewport)
         # saved_session and credentials_login both use the persistent per-platform
         # dir, so a successful credential login is reused as a saved session next.
+        # Prefer the installed Edge (same browser as edge_profile reuse).
         profile_dir = self.cfg.session_dir_for(self.platform)
         profile_dir.mkdir(parents=True, exist_ok=True)
-        vp = {"width": viewport[0], "height": viewport[1]} if viewport else None
-        return p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir), headless=headless, viewport=vp,
-            args=["--disable-blink-features=AutomationControlled"])
+        return launch_persistent(p, profile_dir, headless, viewport)
 
     def _prepare_and_verify(self, page, strat: str) -> bool:
         if strat == "credentials_login":
