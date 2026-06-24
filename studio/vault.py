@@ -274,6 +274,22 @@ class CredentialVault:
             c.execute("DELETE FROM credentials WHERE platform=? AND account=?",
                       (platform, account))
 
+    # --- LLM provider API keys (stored encrypted like any credential) -------
+    def set_api_key(self, provider: str, key: str) -> None:
+        self.store(f"llm:{provider}", username=provider, password=key,
+                   account="apikey")
+
+    def get_api_key(self, provider: str) -> str:
+        c = self.get(f"llm:{provider}", account="apikey")
+        return c["password"].reveal() if c else ""
+
+    def has_api_key(self, provider: str) -> bool:
+        return bool(self.status(f"llm:{provider}", account="apikey")
+                    .get("has_password"))
+
+    def delete_api_key(self, provider: str) -> None:
+        self.delete(f"llm:{provider}", account="apikey")
+
 
 def _lockdown(path: Path) -> None:
     """Restrict a secret file/dir to the current user + SYSTEM (NTFS ACLs).

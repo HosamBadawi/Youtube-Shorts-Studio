@@ -61,6 +61,12 @@ class StudioConfig:
     # video's spoken language; or force e.g. "Arabic" / "English".
     metadata_language: str = "auto"
 
+    # --- which AI writes captions / picks segments --------------------------
+    # ollama (local) | openai | anthropic | gemini. Chosen from the web UI;
+    # cloud API keys are stored ENCRYPTED in the vault, never in this file.
+    llm_provider: str = "ollama"
+    llm_model: str = ""   # model id for the provider ("" = sensible default)
+
     # --- transcription ------------------------------------------------------
     whisper_model: str = "base"             # tiny|base|small|medium|large-v3
     whisper_device: str = "auto"            # auto|cpu|cuda  (you have a 3060 Ti)

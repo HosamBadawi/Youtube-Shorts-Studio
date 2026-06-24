@@ -21,7 +21,7 @@ from .captions import CaptionStyle, burn_captions
 from .config import StudioConfig
 from .jobs import (STATUS_DONE, STATUS_ERROR, STATUS_PROCESSING,
                    STATUS_PUBLISHING, STATUS_READY, Job, JobStore)
-from .llm import OllamaClient
+from .llm import make_llm
 from .metadata import VideoMeta
 from .transcribe import transcribe
 
@@ -39,13 +39,13 @@ class StudioPipeline:
     def __init__(self, cfg: StudioConfig, store: JobStore, vault=None) -> None:
         self.cfg = cfg
         self.store = store
-        self.ollama = OllamaClient(cfg.ollama_url, cfg.ollama_model,
-                                   cfg.ollama_enabled, timeout=cfg.ollama_timeout,
-                                   think=cfg.ollama_think)
         if vault is None:
             from .vault import CredentialVault
             vault = CredentialVault(cfg)
         self.vault = vault
+        # The active LLM (local Ollama or a cloud provider) — rebuilt by the
+        # server when the user changes the model in the UI.
+        self.llm = make_llm(cfg, vault)
 
     # ======================================================================
     # PREPARE  (transcribe -> segment -> reframe -> metadata)
@@ -59,7 +59,7 @@ class StudioPipeline:
 
             # Lock in the Ollama model now (auto-pick the best installed one).
             if self.cfg.ollama_enabled:
-                self.ollama.resolve_model()
+                self.llm.resolve_model()
 
             src = job.source_path
             job.duration = _probe_duration(src)
@@ -78,7 +78,7 @@ class StudioPipeline:
             if job.duration > self.cfg.keep_whole_if_under_seconds and tr.available:
                 job.stage = "selecting highlight"
                 self.store.update(job)
-                span = self.ollama.pick_segment(
+                span = self.llm.pick_segment(
                     tr.timestamped(), job.duration, self.cfg.target_short_seconds)
                 if span is None:  # LLM failed -> sensible default window
                     span = (0.0, min(self.cfg.target_short_seconds, job.duration))
@@ -120,12 +120,12 @@ class StudioPipeline:
 
     def _draft_metadata(self, transcript: str, per_platform: bool,
                         niche: str, language: str = "") -> VideoMeta:
-        if not self.ollama.available():
+        if not self.llm.available():
             return VideoMeta(title="", caption="", source="manual", hashtags=[])
         if per_platform:
-            return self.ollama.generate_per_platform(
+            return self.llm.generate_per_platform(
                 transcript, list(self.cfg.enabled_platforms), niche, language)
-        return (self.ollama.generate_metadata(transcript, None, niche, language)
+        return (self.llm.generate_metadata(transcript, None, niche, language)
                 or VideoMeta())
 
     def _metadata_language(self, transcript_lang: str) -> str:
@@ -217,7 +217,7 @@ class StudioPipeline:
                     pass
 
         if self.cfg.ollama_enabled:
-            self.ollama.resolve_model()
+            self.llm.resolve_model()
 
         if is_url(source):
             stage("downloading video")
@@ -235,7 +235,7 @@ class StudioPipeline:
         stage("selecting highlights")
         segs: list[tuple[float, float, str]] = []
         if tr.available:
-            segs = self.ollama.pick_segments(tr.timestamped(), duration, count,
+            segs = self.llm.pick_segments(tr.timestamped(), duration, count,
                                              target_len)
         if not segs:  # no transcript / model -> at least one default window
             segs = [(0.0, min(target_len, duration), "")]
@@ -263,10 +263,10 @@ class StudioPipeline:
                 self._apply_captions(job, tr.words, raw, out)
                 job.output_path = out
                 Path(seg_mp4).unlink(missing_ok=True)
-                if self.ollama.available():
+                if self.llm.available():
                     job.stage = f"short {idx}: writing caption"
                     self.store.update(job)
-                    m = self.ollama.generate_metadata(job.transcript or topic,
+                    m = self.llm.generate_metadata(job.transcript or topic,
                                                       None, niche, language)
                     if m:
                         job.meta = m

@@ -118,11 +118,28 @@
         <div id="pwBanner" class="banner hidden">⚠️ Your app password is still the default — change <code>app_password</code> in studio.yaml.</div>
 
         <div class="panel">
-          <div class="section-head" style="margin-top:0"><h2>Server health</h2><button id="healthRefresh" class="btn ghost tiny">↻</button></div>
-          <div id="healthChecks" class="list"></div>
+          <div class="section-head" style="margin-top:0"><h2>AI model</h2><span id="modelChip" class="cc"></span></div>
+          <p class="muted small">The model that writes captions and picks the highlights. Local Ollama is free; cloud providers need an API key.</p>
+          <label class="lbl">Provider</label>
+          <select id="provSel" class="select">
+            <option value="ollama">🖥️ Ollama (local, free)</option>
+            <option value="openai">⚡ OpenAI (ChatGPT)</option>
+            <option value="anthropic">🧠 Anthropic (Claude)</option>
+            <option value="gemini">✦ Google Gemini</option>
+          </select>
+          <div id="keyRow" class="hidden" style="margin-top:12px">
+            <label class="lbl">API key <span id="keyState" class="muted small"></span></label>
+            <div class="inline"><input id="apiKey" type="password" placeholder="paste API key"><button id="keySave" class="btn ghost">Save</button></div>
+          </div>
+          <label class="lbl" style="margin-top:12px">Model</label>
+          <select id="modelSel" class="select"></select>
+          <input id="modelCustom" type="text" class="hidden" placeholder="custom model id" style="margin-top:8px" />
+          <button id="modelSave" class="btn primary block">Use this model</button>
+          <p id="modelMsg" class="err"></p>
         </div>
 
-        <div id="connList" class="list" style="margin-top:14px"></div>
+        <div class="section-head"><h2>Platforms</h2></div>
+        <div id="connList" class="list"></div>
       </section>
 
       <!-- ============ SHORTS LIBRARY ============ -->

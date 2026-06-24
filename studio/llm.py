@@ -28,7 +28,128 @@ from .metadata import VideoMeta, normalize_hashtags
 logger = logging.getLogger(__name__)
 
 
-class OllamaClient:
+# Cloud providers and a curated set of current model ids (the UI also allows a
+# custom model name, since these change often).
+CLOUD_PROVIDERS = ("openai", "anthropic", "gemini")
+CLOUD_MODELS = {
+    "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "o4-mini"],
+    "anthropic": ["claude-opus-4-8", "claude-sonnet-4-6",
+                  "claude-haiku-4-5-20251001"],
+    "gemini": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
+               "gemini-1.5-pro"],
+}
+CLOUD_DEFAULT = {"openai": "gpt-4o-mini", "anthropic": "claude-sonnet-4-6",
+                 "gemini": "gemini-2.0-flash"}
+
+
+class _BaseLLM:
+    """Shared high-level prompting (segment picking + metadata). Subclasses
+    implement ``available``, ``resolve_model`` and ``_generate``."""
+
+    model = ""
+
+    def available(self) -> bool:  # pragma: no cover - overridden
+        return False
+
+    def resolve_model(self) -> str:
+        return self.model
+
+    def _generate(self, prompt: str, want_json: bool = True) -> str | None:  # noqa
+        raise NotImplementedError
+
+    # --- high-level (provider-agnostic) ------------------------------------
+    def pick_segment(self, timestamped_transcript: str, total_duration: float,
+                     target_seconds: float) -> tuple[float, float] | None:
+        if not timestamped_transcript.strip():
+            return None
+        self.resolve_model()
+        prompt = _SEGMENT_PROMPT.format(
+            target=int(target_seconds), total=int(total_duration),
+            transcript=timestamped_transcript[:8000])
+        obj = _loads(self._generate(prompt, want_json=True))
+        if not obj:
+            return None
+        try:
+            start = max(0.0, float(obj["start"]))
+            end = min(total_duration, float(obj["end"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        if end - start < 3.0:
+            return None
+        return (start, end)
+
+    def pick_segments(self, timestamped_transcript: str, total_duration: float,
+                      count: int, target_seconds: float
+                      ) -> list[tuple[float, float, str]]:
+        if not timestamped_transcript.strip() or count < 1:
+            return []
+        self.resolve_model()
+        prompt = _MULTI_SEGMENT_PROMPT.format(
+            count=count, target=int(target_seconds), total=int(total_duration),
+            transcript=timestamped_transcript[:16000])
+        obj = _loads(self._generate(prompt, want_json=True))
+        if not obj:
+            return []
+        raw = obj.get("segments") if isinstance(obj, dict) else obj
+        if not isinstance(raw, list):
+            return []
+        picked: list[tuple[float, float, str]] = []
+        for item in raw:
+            try:
+                s = max(0.0, float(item["start"]))
+                e = min(total_duration, float(item["end"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if e - s >= 3.0:
+                picked.append((s, e, str(item.get("topic", "")).strip()))
+        picked.sort(key=lambda x: x[0])
+        out: list[tuple[float, float, str]] = []
+        for s, e, topic in picked:
+            if out and s < out[-1][1] - 1.0:
+                continue
+            out.append((s, e, topic))
+            if len(out) >= count:
+                break
+        logger.info("picked %d/%d segments", len(out), count)
+        return out
+
+    def generate_metadata(self, transcript_text: str, platform: str | None = None,
+                          niche: str = "", language: str = "") -> VideoMeta | None:
+        if not transcript_text.strip():
+            transcript_text = "(no transcript available - infer from a generic " \
+                              "engaging short-form video)"
+        self.resolve_model()
+        lang_rule = (f"Write the title, caption AND hashtags in {language}."
+                     if language else
+                     "Write everything in the SAME language as the transcript.")
+        prompt = _METADATA_PROMPT.format(
+            platform=platform or "generic short-form (YouTube/TikTok/Reels)",
+            niche=niche or "general", language_rule=lang_rule,
+            transcript=transcript_text[:6000])
+        obj = _loads(self._generate(prompt, want_json=True))
+        if not obj:
+            return None
+        return VideoMeta(
+            title=str(obj.get("title", "")).strip(),
+            caption=str(obj.get("caption", "")).strip(),
+            hashtags=normalize_hashtags(obj.get("hashtags")),
+            source="ai")
+
+    def generate_per_platform(self, transcript_text: str, platforms: list[str],
+                              niche: str = "", language: str = "") -> VideoMeta:
+        base = self.generate_metadata(transcript_text, None, niche,
+                                      language) or VideoMeta()
+        for p in platforms:
+            tailored = self.generate_metadata(transcript_text, p, niche, language)
+            if tailored:
+                base.overrides[p] = {"title": tailored.title,
+                                     "caption": tailored.caption,
+                                     "hashtags": tailored.hashtags}
+        base.source = "ai"
+        return base
+
+
+class OllamaClient(_BaseLLM):
     def __init__(self, base_url: str = "http://localhost:11434",
                  model: str = "auto", enabled: bool = True,
                  timeout: float = 120.0, think: bool = False) -> None:
@@ -137,116 +258,90 @@ class OllamaClient:
             logger.warning("Ollama request failed: %s", exc)
             return None
 
-    # --- high-level ---------------------------------------------------------
-    def pick_segment(self, timestamped_transcript: str, total_duration: float,
-                     target_seconds: float) -> tuple[float, float] | None:
-        """Return the best (start, end) span, or None to keep the whole clip."""
-        if not timestamped_transcript.strip():
-            return None
-        self.resolve_model()
-        prompt = _SEGMENT_PROMPT.format(
-            target=int(target_seconds),
-            total=int(total_duration),
-            transcript=timestamped_transcript[:8000],
-        )
-        raw = self._generate(prompt, want_json=True)
-        obj = _loads(raw)
-        if not obj:
+    # high-level methods (pick_segment(s), generate_metadata, …) inherited.
+
+
+class CloudLLM(_BaseLLM):
+    """OpenAI / Anthropic / Gemini via their HTTP APIs (stdlib urllib)."""
+
+    def __init__(self, provider: str, model: str, api_key: str,
+                 timeout: float = 120.0) -> None:
+        self.provider = provider
+        self.model = model or CLOUD_DEFAULT.get(provider, "")
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def available(self) -> bool:
+        return bool(self.api_key) and bool(self.model)
+
+    def list_models(self) -> list[str]:
+        return CLOUD_MODELS.get(self.provider, [])
+
+    def _generate(self, prompt: str, want_json: bool = True) -> str | None:
+        if not self.available():
             return None
         try:
-            start = max(0.0, float(obj["start"]))
-            end = min(total_duration, float(obj["end"]))
-        except (KeyError, TypeError, ValueError):
-            return None
-        if end - start < 3.0:  # implausibly short -> ignore
-            return None
-        logger.info("Ollama picked %.1f-%.1fs: %s", start, end,
-                    obj.get("reason", ""))
-        return (start, end)
+            if self.provider == "openai":
+                return self._openai(prompt, want_json)
+            if self.provider == "anthropic":
+                return self._anthropic(prompt)
+            if self.provider == "gemini":
+                return self._gemini(prompt, want_json)
+        except urllib.error.HTTPError as exc:
+            logger.warning("%s HTTP %s: %s", self.provider, exc.code,
+                           exc.read().decode()[:200])
+        except Exception as exc:
+            logger.warning("%s request failed: %s", self.provider, exc)
+        return None
 
-    def pick_segments(self, timestamped_transcript: str, total_duration: float,
-                      count: int, target_seconds: float
-                      ) -> list[tuple[float, float, str]]:
-        """Pick up to ``count`` DISTINCT, non-overlapping segments, each its own
-        self-contained topic. Returns ``[(start, end, topic), ...]`` sorted by
-        time. Empty list if the model is unreachable / returns nothing usable."""
-        if not timestamped_transcript.strip() or count < 1:
-            return []
-        self.resolve_model()
-        prompt = _MULTI_SEGMENT_PROMPT.format(
-            count=count, target=int(target_seconds), total=int(total_duration),
-            transcript=timestamped_transcript[:16000])
-        obj = _loads(self._generate(prompt, want_json=True))
-        if not obj:
-            return []
-        raw = obj.get("segments") if isinstance(obj, dict) else obj
-        if not isinstance(raw, list):
-            return []
-        picked: list[tuple[float, float, str]] = []
-        for item in raw:
-            try:
-                s = max(0.0, float(item["start"]))
-                e = min(total_duration, float(item["end"]))
-            except (KeyError, TypeError, ValueError):
-                continue
-            if e - s >= 3.0:
-                picked.append((s, e, str(item.get("topic", "")).strip()))
-        # Sort by time and drop any that overlap an already-kept earlier one.
-        picked.sort(key=lambda x: x[0])
-        out: list[tuple[float, float, str]] = []
-        for s, e, topic in picked:
-            if out and s < out[-1][1] - 1.0:   # overlaps the previous keep
-                continue
-            out.append((s, e, topic))
-            if len(out) >= count:
-                break
-        logger.info("Ollama picked %d/%d segments", len(out), count)
-        return out
+    def _post(self, url: str, body: dict, headers: dict) -> dict:
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", **headers},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
 
-    def generate_metadata(self, transcript_text: str, platform: str | None = None,
-                          niche: str = "", language: str = "") -> VideoMeta | None:
-        """Draft title/caption/hashtags. ``platform=None`` = generic base set.
-        ``language`` (e.g. "Arabic") forces the output language; empty = match
-        the transcript's language."""
-        if not transcript_text.strip():
-            transcript_text = "(no transcript available - infer from a generic " \
-                              "engaging short-form video)"
-        self.resolve_model()
-        lang_rule = (f"Write the title, caption AND hashtags in {language}."
-                     if language else
-                     "Write everything in the SAME language as the transcript.")
-        prompt = _METADATA_PROMPT.format(
-            platform=platform or "generic short-form (YouTube/TikTok/Reels)",
-            niche=niche or "general",
-            language_rule=lang_rule,
-            transcript=transcript_text[:6000],
-        )
-        raw = self._generate(prompt, want_json=True)
-        obj = _loads(raw)
-        if not obj:
-            return None
-        return VideoMeta(
-            title=str(obj.get("title", "")).strip(),
-            caption=str(obj.get("caption", "")).strip(),
-            hashtags=normalize_hashtags(obj.get("hashtags")),
-            source="ollama",
-        )
+    def _openai(self, prompt: str, want_json: bool) -> str:
+        body = {"model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.6}
+        if want_json:
+            body["response_format"] = {"type": "json_object"}
+        d = self._post("https://api.openai.com/v1/chat/completions", body,
+                       {"Authorization": f"Bearer {self.api_key}"})
+        return d["choices"][0]["message"]["content"]
 
-    def generate_per_platform(self, transcript_text: str, platforms: list[str],
-                              niche: str = "", language: str = "") -> VideoMeta:
-        """Base set + a tailored override for every requested platform."""
-        base = self.generate_metadata(transcript_text, None, niche,
-                                      language) or VideoMeta()
-        for p in platforms:
-            tailored = self.generate_metadata(transcript_text, p, niche, language)
-            if tailored:
-                base.overrides[p] = {
-                    "title": tailored.title,
-                    "caption": tailored.caption,
-                    "hashtags": tailored.hashtags,
-                }
-        base.source = "ollama"
-        return base
+    def _anthropic(self, prompt: str) -> str:
+        body = {"model": self.model, "max_tokens": 1024,
+                "messages": [{"role": "user", "content": prompt}]}
+        d = self._post("https://api.anthropic.com/v1/messages", body,
+                       {"x-api-key": self.api_key,
+                        "anthropic-version": "2023-06-01"})
+        return "".join(b.get("text", "") for b in d.get("content", [])
+                       if b.get("type") == "text")
+
+    def _gemini(self, prompt: str, want_json: bool) -> str:
+        body: dict = {"contents": [{"parts": [{"text": prompt}]}]}
+        if want_json:
+            body["generationConfig"] = {"responseMimeType": "application/json"}
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               f"{self.model}:generateContent?key={self.api_key}")
+        d = self._post(url, body, {})
+        return d["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def make_llm(cfg, vault=None) -> _BaseLLM:
+    """Build the active LLM client from config (Ollama or a cloud provider)."""
+    provider = (getattr(cfg, "llm_provider", "ollama") or "ollama").lower()
+    if provider == "ollama" or provider not in CLOUD_PROVIDERS:
+        return OllamaClient(cfg.ollama_url, cfg.ollama_model, cfg.ollama_enabled,
+                            timeout=cfg.ollama_timeout, think=cfg.ollama_think)
+    key = ""
+    if vault is not None and getattr(vault, "enabled", False):
+        key = vault.get_api_key(provider) or ""
+    return CloudLLM(provider, getattr(cfg, "llm_model", ""), key,
+                    timeout=cfg.ollama_timeout)
 
 
 # Models that only produce embeddings - useless for generation, never pick them.

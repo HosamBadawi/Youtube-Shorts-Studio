@@ -28,6 +28,12 @@ ollama_url: http://localhost:11434
 ollama_model: auto            # auto = pick the best installed model; or pin one
 ollama_enabled: true
 ollama_think: false           # keep false for qwen3 / deepseek-r1 thinking models
+
+# Which AI writes captions / picks highlights. Choose from the web UI (🔌 Connect
+# screen). ollama (local, free) | openai | anthropic | gemini. Cloud API keys are
+# stored ENCRYPTED in the vault via the UI — never put keys in this file.
+llm_provider: ollama
+llm_model: ""                 # provider model id ("" = sensible default)
 ollama_timeout: 240           # raise for big models (35B) that spill to CPU
 metadata_language: auto       # auto = match the video's language; or "Arabic"/"English"
 

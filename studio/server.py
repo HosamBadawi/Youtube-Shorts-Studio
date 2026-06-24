@@ -39,6 +39,7 @@ from .jobs import STATUS_READY, JobStore
 from .metadata import VideoMeta, normalize_hashtags
 from .pipeline import StudioPipeline
 from .server_connections import build_connections_router, load_overrides
+from .server_models import build_models_router, load_llm_selection
 from .vault import CredentialVault, _lockdown
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     cfg = cfg or StudioConfig.load()
     cfg.ensure_dirs()
     load_overrides(cfg)
+    load_llm_selection(cfg)
     store = JobStore(cfg.db_path)
     vault = CredentialVault(cfg)
     pipeline = StudioPipeline(cfg, store, vault)
@@ -140,10 +142,11 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         return {
             "authed": authed,
             "needs_password": bool(expected),
-            "ollama": pipeline.ollama.available() if authed else False,
-            "ollama_model": (pipeline.ollama.resolve_model()
-                             if authed and pipeline.ollama.available()
-                             else cfg.ollama_model),
+            "ollama": pipeline.llm.available() if authed else False,
+            "ollama_model": (pipeline.llm.resolve_model()
+                             if authed and pipeline.llm.available()
+                             else (cfg.llm_model or cfg.ollama_model)),
+            "llm_provider": cfg.llm_provider,
             "platforms": list(cfg.enabled_platforms),
             "reframe_mode": cfg.reframe_mode,
             "default_count": cfg.shorts_per_video,
@@ -313,13 +316,13 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         job = store.get(job_id)
         if not job:
             raise HTTPException(404, "job not found")
-        if not pipeline.ollama.available():
-            raise HTTPException(503, "Ollama is not reachable")
+        if not pipeline.llm.available():
+            raise HTTPException(503, "the selected AI model is not reachable")
         body = await request.json()
         niche = str(body.get("niche", ""))
         language = pipeline._metadata_language("")
-        meta = pipeline.ollama.generate_metadata(job.transcript, None, niche,
-                                                 language)
+        meta = pipeline.llm.generate_metadata(job.transcript, None, niche,
+                                              language)
         if meta:
             job.meta = meta
             store.update(job)
@@ -357,5 +360,6 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     # 'net' pool so a slow check never head-of-line-blocks GPU render/publish.
     app.include_router(build_connections_router(
         cfg, store, pipeline, vault, net, runs, require_auth))
+    app.include_router(build_models_router(cfg, pipeline, vault, require_auth))
 
     return app

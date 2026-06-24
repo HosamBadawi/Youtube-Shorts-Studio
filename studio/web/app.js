@@ -30,7 +30,7 @@ function go(screen) {
   if (screen === "download") loadVideos();
   if (screen === "shorts") loadShorts();
   if (screen === "create") loadLocalOptions();
-  if (screen === "connections") { loadHealth(); loadConnections(); }
+  if (screen === "connections") { loadHealth(); loadModels(); loadConnections(); }
 }
 $$(".tab").forEach((t) => (t.onclick = () => go(t.dataset.go)));
 
@@ -302,6 +302,65 @@ function setStatus(card, text, bad, spin) {
   el.innerHTML = (spin ? `<span class="spinner"></span>` : "") + esc(text);
   el.className = "status-line" + (bad ? " bad" : "");
 }
+
+// ====================================================================
+// AI MODEL
+// ====================================================================
+let MODELS = null;
+const PROV_LABEL = { ollama: "Ollama", openai: "OpenAI", anthropic: "Claude", gemini: "Gemini" };
+
+async function loadModels() {
+  try { MODELS = await api("/api/models"); } catch (e) { return; }
+  $("#provSel").value = MODELS.provider;
+  renderModelPanel();
+}
+function renderModelPanel() {
+  const prov = $("#provSel").value;
+  const isCloud = prov !== "ollama";
+  $("#keyRow").classList.toggle("hidden", !isCloud);
+  if (isCloud) {
+    const has = MODELS.keys[prov];
+    $("#keyState").textContent = has ? "✓ saved" : (MODELS.vault_enabled ? "not set" : "(vault off)");
+    $("#apiKey").value = "";
+  }
+  // model options
+  const opts = isCloud ? (MODELS.cloud_models[prov] || []) : (MODELS.ollama_models || []);
+  const sel = $("#modelSel");
+  sel.innerHTML = opts.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("")
+    + `<option value="__custom__">✏️ custom…</option>`;
+  if (prov === MODELS.provider && MODELS.model && opts.includes(MODELS.model)) sel.value = MODELS.model;
+  if (!opts.length && !isCloud) sel.innerHTML = `<option value="__custom__">✏️ type model id…</option>`;
+  onModelSelChange();
+  // active chip
+  const active = MODELS.active_available;
+  $("#modelChip").className = "cc " + (active ? "ok" : "warn");
+  $("#modelChip").textContent = `${PROV_LABEL[MODELS.provider] || MODELS.provider}${MODELS.model ? " · " + MODELS.model : ""}`;
+}
+function onModelSelChange() {
+  const custom = $("#modelSel").value === "__custom__";
+  $("#modelCustom").classList.toggle("hidden", !custom);
+}
+$("#provSel").onchange = renderModelPanel;
+$("#modelSel").onchange = onModelSelChange;
+$("#keySave").onclick = async () => {
+  $("#modelMsg").textContent = "";
+  const key = $("#apiKey").value.trim();
+  if (!key) { $("#modelMsg").textContent = "Paste your API key"; return; }
+  try {
+    await api("/api/models/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, key }) });
+    toast("API key saved 🔒"); loadModels();
+  } catch (e) { $("#modelMsg").textContent = e.message; }
+};
+$("#modelSave").onclick = async () => {
+  $("#modelMsg").textContent = "";
+  let model = $("#modelSel").value;
+  if (model === "__custom__") model = $("#modelCustom").value.trim();
+  try {
+    const r = await api("/api/models/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, model }) });
+    toast(r.available ? "Model set ✓" : "Set — but not reachable (check key/Ollama)");
+    boot(); loadModels();
+  } catch (e) { $("#modelMsg").textContent = e.message; }
+};
 
 // ====================================================================
 // CONNECTIONS
