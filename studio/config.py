@@ -115,6 +115,16 @@ class StudioConfig:
     # post to your personal profile.
     facebook_page_url: str = ""
 
+    # --- official Meta (Graph) API for Instagram + Facebook Page ------------
+    # When enabled, IG + FB Page post via the official API (reliable, resumable,
+    # returns a real post id) instead of browser automation. The Page access
+    # token is stored ENCRYPTED in the vault, never here. Free for your OWN
+    # accounts (Development Mode — no App Review).
+    meta_api_enabled: bool = False
+    facebook_page_id: str = ""          # numeric Page id (graph: /me/accounts)
+    instagram_business_id: str = ""     # IG Business Account id linked to the Page
+    meta_graph_version: str = "v21.0"
+
     # Folder the web app browses for local source videos ("" = use download_dir).
     media_library: str = ""
 
