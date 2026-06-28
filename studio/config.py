@@ -125,6 +125,11 @@ class StudioConfig:
     publish_backoff_max: float = 30.0
     screenshot_on_failure: bool = True      # save a screenshot on a failed try
     health_check_timeout: float = 45.0      # per-platform health/login budget (s)
+    # How long to wait for the video upload to FINISH before clicking the final
+    # Post/Share button (platforms disable it mid-upload). Raise for slow upload
+    # speeds — a long short on a slow line can take many minutes.
+    publish_upload_timeout: float = 1200.0  # seconds (20 min)
+    move_uploaded_on_success: bool = True   # move the short to uploaded/ when done
 
     # --- session strategy (how a logged-in browser is obtained) -------------
     # auto = try the whole chain [edge_profile -> saved_session ->

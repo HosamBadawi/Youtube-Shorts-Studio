@@ -170,10 +170,16 @@ class StudioPipeline:
             any_ok = any_ok or result.ok
             self.store.update(job)
 
-        # A rehearsal never counts as a publish: don't mark the day or move the file.
-        if any_ok and not dry_run:
-            self.store.mark_published_today(job.id)
-            self._move_to_uploaded(job)
+        # A rehearsal never counts as a publish: don't mark the day or move files.
+        if not dry_run:
+            if any_ok:
+                self.store.mark_published_today(job.id)
+            # Move to uploaded/ only when EVERY selected platform succeeded, so a
+            # partial failure leaves the file in place to retry the rest.
+            all_ok = bool(platforms) and all(
+                job.results.get(p, {}).get("ok") for p in platforms)
+            if all_ok and self.cfg.move_uploaded_on_success:
+                self._move_to_uploaded(job)
         job.status = STATUS_DONE
         job.stage = ""
         self.store.update(job)

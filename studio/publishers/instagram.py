@@ -50,8 +50,13 @@ class InstagramPublisher(PlaywrightPublisher):
         page.wait_for_timeout(1500)
         page.locator("input[type=file]").first.set_input_files(
             video_path, timeout=30000)
-        page.wait_for_timeout(6000)
-        _click_text(page, ["OK"])                       # "video will be a reel"
+        log.append("uploading (waiting for it to finish)")
+        _click_text(page, ["OK"], timeout=5000)         # "video will be a reel"
+        # The crop screen's Next only appears once the upload/processing is done —
+        # wait it out so a slow upload doesn't skip straight past the flow.
+        self.wait_uploaded(
+            lambda: page.get_by_role("button", name="Next"),
+            log, "instagram upload")
         for _ in range(2):                              # crop -> Next, edit -> Next
             if _click_text(page, ["Next"]):
                 page.wait_for_timeout(2500)

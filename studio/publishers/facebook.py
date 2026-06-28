@@ -59,19 +59,27 @@ class FacebookPublisher(PlaywrightPublisher):
         log.append("selecting file")
         page.locator("input[type=file]").first.set_input_files(
             video_path, timeout=30000)
-        log.append("uploading")
-        page.wait_for_timeout(9000)
-        if not _wait_click(page, ["Next"], tries=10):       # upload -> description
+        # The first Next only enables once the upload has progressed — wait it out
+        # for slow connections, then advance to the description screen.
+        log.append("uploading (waiting for it to finish)")
+        self.wait_uploaded(
+            lambda: page.get_by_role("button", name="Next", exact=True),
+            log, "facebook upload")
+        if not _click_text(page, ["Next"], timeout=10000):  # upload -> description
             return PublishResult.failure(
                 self.name, "reel upload didn't reach the Next step", log=log)
         page.wait_for_timeout(3500)
         log.append("writing description")
         _set_caption(page, caption)
-        if not _wait_click(page, ["Next"], tries=6):         # description -> share
+        if not _wait_click(page, ["Next"], tries=8):         # description -> share
             return PublishResult.failure(self.name, "no second Next", log=log)
         page.wait_for_timeout(3000)
         if self.dry_run:
             return self.dry_stop(page, log)
+        # Make sure the upload is fully done before the final Post.
+        self.wait_uploaded(
+            lambda: page.get_by_role("button", name="Post", exact=True),
+            log, "facebook post")
         log.append("posting")
         if not _click_text(page, ["Post", "Publish", "Share now"]):
             return PublishResult.failure(self.name, "no Post button", log=log)

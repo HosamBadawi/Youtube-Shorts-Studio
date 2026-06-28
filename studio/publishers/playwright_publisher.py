@@ -214,6 +214,27 @@ class PlaywrightPublisher:
             log.append(f"rehearsal screenshot failed: {exc}")
         return PublishResult.rehearsed(self.name, shot_url=url, log=log)
 
+    def wait_uploaded(self, get_button, log: list[str],
+                      label: str = "upload") -> bool:
+        """Block until the final submit button exists AND is enabled. Platforms
+        keep that button disabled while the video uploads, so this is the reliable
+        'upload finished' signal — essential on slow upload connections. ``get_button``
+        is a callable returning a Locator. Returns True when ready; False on
+        timeout (the caller may still attempt the click)."""
+        deadline = time.time() + max(60.0, float(self.cfg.publish_upload_timeout))
+        while time.time() < deadline:
+            try:
+                btn = get_button()
+                if btn is not None and btn.count() > 0 and btn.first.is_enabled():
+                    log.append(f"{label}: ready")
+                    return True
+            except Exception:
+                pass
+            time.sleep(2.0)
+        log.append(f"{label}: not confirmed ready after "
+                   f"{int(self.cfg.publish_upload_timeout)}s — attempting anyway")
+        return False
+
     def _maybe_shot(self, page, n: int, log: list[str]) -> None:
         if not self.cfg.screenshot_on_failure:
             return

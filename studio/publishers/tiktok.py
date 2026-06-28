@@ -77,6 +77,10 @@ class TikTokPublisher(PlaywrightPublisher):
         _set_caption(frame, caption, log)
         if self.dry_run:
             return self.dry_stop(page, log)
+        # Slow upload: TikTok keeps Post disabled until the video finishes
+        # uploading. Wait for it to enable before clicking, or we'd post nothing.
+        log.append("waiting for upload to finish")
+        self.wait_uploaded(lambda: _post_locator(frame), log, "tiktok upload")
         log.append("clicking Post")
         if not _click_post(frame):
             return PublishResult.failure(self.name, "no Post button", log=log)
@@ -114,6 +118,10 @@ def _set_caption(frame, caption: str, log: list[str]) -> None:
         except Exception:
             continue
     log.append("warning: caption field not found")
+
+
+def _post_locator(frame):
+    return frame.locator("[data-e2e=post_video_button], button:has-text('Post')")
 
 
 def _click_post(frame) -> bool:

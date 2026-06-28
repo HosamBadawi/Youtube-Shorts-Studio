@@ -115,13 +115,16 @@ class YouTubePublisher:
                     "selfDeclaredMadeForKids": False,
                 },
             }
-            media = MediaFileUpload(video_path, chunksize=-1, resumable=True,
-                                    mimetype="video/mp4")
+            # Resumable CHUNKED upload (8 MB chunks) instead of one big request —
+            # far more reliable on slow/flaky upload lines, and ``num_retries``
+            # auto-retries transient 5xx/network errors per chunk with backoff.
+            media = MediaFileUpload(video_path, chunksize=8 * 1024 * 1024,
+                                    resumable=True, mimetype="video/mp4")
             req = youtube.videos().insert(part="snippet,status", body=body,
                                           media_body=media)
             response = None
             while response is None:
-                status, response = req.next_chunk()
+                status, response = req.next_chunk(num_retries=5)
                 if status:
                     log.append(f"upload {int(status.progress() * 100)}%")
             vid = response["id"]
