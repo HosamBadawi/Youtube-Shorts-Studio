@@ -67,13 +67,17 @@ class TikTokPublisher(PlaywrightPublisher):
     def _do_publish(self, page, video_path, meta, log) -> PublishResult:
         caption = meta.caption_for("tiktok")
         page.goto(UPLOAD_URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(6000)                  # redirects to /tiktokstudio/upload
         frame = _upload_frame(page)
         log.append("selecting file")
         frame.locator("input[type=file]").first.set_input_files(
             video_path, timeout=30000)
-        log.append("waiting for processing")
-        frame.wait_for_timeout(8000)
+        log.append("uploading")
+        # Wait for the Studio composer (caption editor) to render, then clear the
+        # onboarding popups ("Preview your video on your phone" / "Got it") that
+        # otherwise sit on top of the caption box and the Post button.
+        _wait_for(frame, _CAPTION_SEL, tries=40)
+        _dismiss_popups(frame)
         _set_caption(frame, caption, log)
         if self.dry_run:
             return self.dry_stop(page, log)
@@ -81,6 +85,7 @@ class TikTokPublisher(PlaywrightPublisher):
         # uploading. Wait for it to enable before clicking, or we'd post nothing.
         log.append("waiting for upload to finish")
         self.wait_uploaded(lambda: _post_locator(frame), log, "tiktok upload")
+        _dismiss_popups(frame)                       # popups can also appear late
         log.append("clicking Post")
         if not _click_post(frame):
             return PublishResult.failure(self.name, "no Post button", log=log)
@@ -103,9 +108,40 @@ def _upload_frame(page):
     return page
 
 
+# TikTok Studio's caption box is a Draft.js editor inside [data-e2e=caption_container].
+_CAPTION_SEL = ("div[data-e2e=caption_container] div[contenteditable=true]",
+                "div.public-DraftEditor-content",
+                "div[contenteditable=true]")
+
+
+def _wait_for(frame, sels, tries: int = 40, gap: int = 1500) -> bool:
+    """Poll until any of ``sels`` is present (composer rendered)."""
+    for _ in range(tries):
+        for sel in sels:
+            try:
+                if frame.locator(sel).count() > 0:
+                    return True
+            except Exception:
+                pass
+        frame.wait_for_timeout(gap)
+    return False
+
+
+def _dismiss_popups(frame) -> None:
+    """Close TikTok Studio onboarding/preview popups that overlay the composer."""
+    for label in ("Got it", "Skip", "Maybe later", "Not now", "OK", "Close",
+                  "I got it"):
+        try:
+            el = frame.get_by_role("button", name=label, exact=True).first
+            if el.count() > 0:
+                el.click(timeout=2000)
+                frame.wait_for_timeout(400)
+        except Exception:
+            continue
+
+
 def _set_caption(frame, caption: str, log: list[str]) -> None:
-    for sel in ("div[contenteditable=true]", "div[data-text=true]",
-                "[data-e2e=caption-input]"):
+    for sel in _CAPTION_SEL:
         try:
             box = frame.locator(sel).first
             if box.count() > 0:
@@ -126,13 +162,17 @@ def _post_locator(frame):
 
 def _click_post(frame) -> bool:
     for getter in (
-        lambda: frame.get_by_role("button", name="Post"),
-        lambda: frame.locator("button:has-text('Post')"),
         lambda: frame.locator("[data-e2e=post_video_button]"),
+        lambda: frame.get_by_role("button", name="Post", exact=True),
+        lambda: frame.locator("button:has-text('Post')"),
     ):
         try:
             btn = getter().first
             if btn.count() > 0:
+                try:
+                    btn.scroll_into_view_if_needed(timeout=5000)
+                except Exception:
+                    pass
                 btn.click(timeout=15000)
                 return True
         except Exception:
