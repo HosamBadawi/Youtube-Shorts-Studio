@@ -34,48 +34,50 @@ class FacebookPublisher(PlaywrightPublisher):
         return "/login" not in page.url
 
     def _open_reel_composer(self, page, log) -> None:
-        """Open the Create-reel composer. When a Page URL is configured, start the
-        reel FROM the Page so it's posted as the Page (the Page has its own 'Reel'
-        button); otherwise use the personal /reels/create. Falls back to
-        /reels/create if the Page button can't be found."""
+        """Open the Create-reel composer. The active Edge identity is the author;
+        with a Page URL configured we visit the Page first to be in Page context,
+        then open /reels/create (verified to compose as the Page 'Ummah Wasat')."""
         url = (self.cfg.facebook_page_url or "").strip()
         if url:
-            log.append("opening Page reel composer")
-            page.goto(url, wait_until="domcontentloaded")
-            page.wait_for_timeout(5000)
-            _dismiss_cookies(page)
-            if _click_text(page, ["Reel"], timeout=6000):
+            log.append("entering Page context")
+            try:
+                page.goto(url, wait_until="domcontentloaded")
                 page.wait_for_timeout(4000)
-                try:
-                    if page.locator("input[type=file]").count() > 0:
-                        return
-                except Exception:
-                    pass
-            log.append("Page 'Reel' button not found — using /reels/create")
+                _dismiss_cookies(page)
+            except Exception:
+                pass
         page.goto(REELS_URL, wait_until="domcontentloaded")
-        page.wait_for_timeout(5000)
+        page.wait_for_timeout(6000)
         _dismiss_cookies(page)
 
     def _do_publish(self, page, video_path, meta, log) -> PublishResult:
+        # FB reel flow (verified): attach -> Next -> [description box] -> Next ->
+        # [audience + Post]. The caption MUST be typed on the screen after the
+        # FIRST Next (the Post screen has no description box).
         caption = meta.caption_for("facebook")
         self._open_reel_composer(page, log)
         log.append("selecting file")
         page.locator("input[type=file]").first.set_input_files(
             video_path, timeout=30000)
-        page.wait_for_timeout(7000)
-        for _ in range(2):
-            if _click_text(page, ["Next"], timeout=4000):
-                page.wait_for_timeout(2500)
+        log.append("uploading")
+        page.wait_for_timeout(9000)
+        if not _wait_click(page, ["Next"], tries=10):       # upload -> description
+            return PublishResult.failure(
+                self.name, "reel upload didn't reach the Next step", log=log)
+        page.wait_for_timeout(3500)
         log.append("writing description")
         _set_caption(page, caption)
+        if not _wait_click(page, ["Next"], tries=6):         # description -> share
+            return PublishResult.failure(self.name, "no second Next", log=log)
+        page.wait_for_timeout(3000)
         if self.dry_run:
             return self.dry_stop(page, log)
-        log.append("publishing")
-        if not _click_text(page, ["Publish", "Share now", "Post"]):
-            return PublishResult.failure(self.name, "no Publish button", log=log)
-        if self._confirm_published(page, ["Publish", "Share now", "Post"],
-                                   r"your reel|published|posted|shared|تم|نشر",
-                                   50000):
+        log.append("posting")
+        if not _click_text(page, ["Post", "Publish", "Share now"]):
+            return PublishResult.failure(self.name, "no Post button", log=log)
+        if self._confirm_published(
+                page, ["Post", "Publish", "Share now"],
+                r"your reel|reel shared|published|posted|shared|تم|نشر", 60000):
             log.append("confirmed published")
             return PublishResult.success(self.name, url=self.home_url, log=log)
         return PublishResult.failure(self.name,
@@ -115,9 +117,20 @@ def _dismiss_cookies(page) -> None:
                        "Decline optional cookies"], timeout=2500)
 
 
+def _wait_click(page, labels, tries: int = 6, gap: int = 1500) -> bool:
+    """Click one of ``labels`` once it appears/enables (FB enables Next only after
+    the upload progresses), retrying up to ``tries`` times."""
+    for _ in range(tries):
+        if _click_text(page, labels, timeout=3000):
+            return True
+        page.wait_for_timeout(gap)
+    return False
+
+
 def _set_caption(page, caption: str) -> None:
     for sel in ("div[contenteditable=true][role=textbox]",
                 "div[aria-label*='description'][contenteditable=true]",
+                "div[role=textbox]",
                 "div[contenteditable=true]"):
         try:
             box = page.locator(sel).first
