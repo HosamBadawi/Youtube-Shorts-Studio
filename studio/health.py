@@ -91,9 +91,8 @@ def server_health(cfg: StudioConfig, store=None) -> dict:
 def platform_health(platform: str, cfg: StudioConfig, vault=None) -> HealthStatus:
     platform = platform.lower()
     try:
-        if platform == "youtube":
-            from .publishers.youtube import YouTubePublisher
-            return YouTubePublisher(cfg, vault).health()
+        # get_publisher already returns YouTubePublisher for "youtube" — one
+        # uniform dispatch, no special-case.
         from .publishers import get_publisher
         return get_publisher(platform, cfg, vault).health()
     except Exception as exc:  # pragma: no cover

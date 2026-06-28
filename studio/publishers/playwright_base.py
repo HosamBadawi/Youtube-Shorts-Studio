@@ -13,7 +13,6 @@ If Playwright (or its browsers) isn't installed, helpers raise
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -81,29 +80,6 @@ def launch_persistent(p, user_data_dir: Path, headless: bool,
     except Exception:
         pass
     return ctx
-
-
-@contextmanager
-def browser_session(profile_dir: Path, headless: bool = True,
-                    viewport: tuple[int, int] = (412, 915)):
-    """Yield a Playwright ``page`` backed by a persistent per-platform profile.
-
-    The mobile-ish viewport nudges some sites toward simpler upload flows.
-    """
-    sync_playwright = _import_sync_playwright()
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=headless,
-            viewport={"width": viewport[0], "height": viewport[1]},
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        try:
-            page = context.pages[0] if context.pages else context.new_page()
-            yield page
-        finally:
-            context.close()
 
 
 def capture_login(profile_dir: Path, start_url: str, platform: str) -> bool:

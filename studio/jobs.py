@@ -106,6 +106,12 @@ class JobStore:
                     c.execute(f"ALTER TABLE jobs ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass  # already present
+            # Indexes: the batch-progress poll filters by batch_id, the library by
+            # created_at — turn those repeated scans into index lookups.
+            c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_batch "
+                      "ON jobs(batch_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created "
+                      "ON jobs(created_at)")
 
     # --- create / read ------------------------------------------------------
     def create(self, source_path: str, batch_id: str = "",

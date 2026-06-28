@@ -246,6 +246,33 @@ class StudioConfig:
                   self.secrets_dir):
             p.mkdir(parents=True, exist_ok=True)
 
+    def validate(self) -> None:
+        """Advisory: clamp a typo'd enum field to a safe default — loud but
+        non-fatal, matching the YAML-parse fallback. A bad ``cloudflare_mode``
+        clamps to ``off`` so a typo can never silently open a public tunnel."""
+        import logging
+        enums = {
+            "cloudflare_mode": ({"quick", "named", "off"}, "off"),
+            "reframe_mode": ({"auto", "crop_blur", "blur_background",
+                              "face_focus", "active_speaker", "smart_crop",
+                              "mirror_background", "dynamic_canvas", "no_crop",
+                              "scene_aware"}, "auto"),
+            "caption_position": ({"lower", "center", "bottom"}, "lower"),
+            "whisper_device": ({"auto", "cpu", "cuda"}, "auto"),
+            "session_strategy": ({"auto", "edge_profile", "saved_session",
+                                  "credentials_login"}, "auto"),
+            "youtube_privacy": ({"public", "unlisted", "private"}, "private"),
+        }
+        log = logging.getLogger(__name__)
+        for name, (allowed, safe) in enums.items():
+            val = str(getattr(self, name, "") or "").strip().lower()
+            if val and val not in allowed:
+                log.error("config: %s=%r is invalid — using %r (allowed: %s)",
+                          name, val, safe, ", ".join(sorted(allowed)))
+                print(f"\n⚠️  config: {name}={val!r} is not valid — using "
+                      f"{safe!r}.\n")
+                setattr(self, name, safe)
+
     # ------------------------------------------------------------------------
     @classmethod
     def load(cls, path: str | Path | None = None) -> "StudioConfig":
@@ -266,6 +293,7 @@ class StudioConfig:
                 if isinstance(cur, dict):
                     continue  # dicts (e.g. strategy overrides) come from YAML only
                 setattr(cfg, f.name, _coerce(os.environ[env_key], cur))
+        cfg.validate()
         return cfg
 
 
