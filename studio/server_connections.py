@@ -14,6 +14,7 @@ honours them immediately.
 from __future__ import annotations
 
 import json
+import queue
 import uuid
 from pathlib import Path
 
@@ -60,6 +61,7 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
                              require_auth) -> APIRouter:
     r = APIRouter()
     health_cache: dict[str, dict] = {}  # last health result per platform
+    code_queues: dict[str, queue.Queue] = {}  # run_id -> pending 6-digit code
 
     def _check_platform(platform: str) -> str:
         platform = platform.lower()
@@ -169,6 +171,70 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
         platform = _check_platform(platform)
         rid = _start(lambda: _run_health(platform))
         return {"ok": True, "run_id": rid}
+
+    # --- interactive credential + 6-digit-code login (phone-driven) --------
+    @r.post("/api/connections/{platform}/login-now")
+    async def login_now(platform: str, request: Request,
+                        _: None = Depends(require_auth)):
+        platform = _check_platform(platform)
+        if platform == "youtube":
+            raise HTTPException(400, "YouTube uses the API — run "
+                                     "`python -m studio.login_setup youtube`")
+        if not (vault and vault.enabled):
+            raise HTTPException(503, "credential vault unavailable "
+                                     "(pip install cryptography)")
+        # Optionally store the credentials submitted with this request first, so
+        # the phone can log in and persist in one tap.
+        body = await request.json()
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", ""))
+        totp = str(body.get("totp_secret", "")).strip()
+        if username and password:
+            vault.store(platform, username, password, totp)
+        elif not vault.status(platform).get("has_password"):
+            raise HTTPException(400, "enter a username + password first")
+
+        if len(runs) > 40:
+            for k in [k for k, v in list(runs.items()) if v.get("done")][:20]:
+                runs.pop(k, None)
+                code_queues.pop(k, None)
+        rid = uuid.uuid4().hex[:12]
+        cq: queue.Queue = queue.Queue(maxsize=1)
+        code_queues[rid] = cq
+        runs[rid] = {"stage": "running", "done": False, "result": None,
+                     "error": "", "prompt": ""}
+
+        def task():
+            from .login_flow import interactive_login
+            try:
+                runs[rid]["result"] = interactive_login(
+                    cfg, vault, platform, runs[rid], cq)
+            except Exception as exc:  # pragma: no cover
+                runs[rid]["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                runs[rid]["done"] = True
+                runs[rid]["stage"] = "done"
+                code_queues.pop(rid, None)
+
+        runner.submit(task)
+        return {"ok": True, "run_id": rid}
+
+    @r.post("/api/connections/login/code")
+    async def submit_code(request: Request, _: None = Depends(require_auth)):
+        body = await request.json()
+        rid = str(body.get("run_id", ""))
+        code = str(body.get("code", "")).strip()
+        if not code:
+            raise HTTPException(400, "code required")
+        cq = code_queues.get(rid)
+        if cq is None:
+            raise HTTPException(404, "no login is waiting for a code "
+                                     "(it may have timed out)")
+        try:
+            cq.put_nowait(code)
+        except queue.Full:
+            raise HTTPException(409, "a code was already submitted")
+        return {"ok": True}
 
     @r.get("/api/connections/run/{run_id}")
     async def run_status(run_id: str, _: None = Depends(require_auth)):

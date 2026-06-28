@@ -420,7 +420,7 @@ function connCard(p, vaultEnabled) {
         <label class="field"><span class="lbl">Password</span><input class="c-pass" type="password" placeholder="${p.credentials.has_password ? "•••••• (stored)" : ""}"></label>
         <label class="field"><span class="lbl">2FA secret <span class="muted small">(optional, base32)</span></span><input class="c-totp" type="text" placeholder="${p.credentials.has_totp ? "•••••• (stored)" : ""}"></label>
         <div class="row"><button class="btn ghost c-save">Save</button><button class="btn ghost c-clear">Clear</button></div>
-        <p class="muted small">Best-effort. Prefer Edge profile / saved session; credential login can trip 2FA.</p>
+        <p class="muted small">Stored encrypted on your PC. Add a 2FA secret for hands-free re-login; otherwise you'll be asked for the 6-digit code when you log in.</p>
       </details>` : `<p class="muted small">Credential storage disabled (cryptography not installed).</p>`);
   return `<div class="card conn" data-p="${p.platform}">
     <div class="short-head"><span class="badge">${icon(p.platform)} ${p.platform}</span>${chip(p)}</div>
@@ -429,8 +429,9 @@ function connCard(p, vaultEnabled) {
     ${credBlock}
     <div class="row" style="margin-top:12px">
       <button class="btn ghost c-check">🩺 Check</button>
-      <button class="btn primary c-connect">🔗 Connect</button>
+      ${p.is_api ? "" : `<button class="btn primary c-login">🔐 Log in</button>`}
     </div>
+    <div class="codebox" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"></div>
     <div class="status-line"></div>
   </div>`;
 }
@@ -454,7 +455,64 @@ function wireConn(platform) {
     catch (e) { setLine(card, e.message, true); }
   };
   q(".c-check").onclick = () => runConn(platform, card, "health");
-  q(".c-connect").onclick = () => runConn(platform, card, "login");
+  if (q(".c-login")) q(".c-login").onclick = () => interactiveLogin(platform, card);
+}
+
+// Phone-driven login: send credentials (+ 6-digit code when the platform asks)
+// to the PC, which logs into the app's own profile and saves the session.
+async function interactiveLogin(platform, card) {
+  const q = (s) => card.querySelector(s);
+  const codebox = q(".codebox");
+  const body = {};
+  if (q(".c-user")) body.username = q(".c-user").value.trim();
+  if (q(".c-pass")) body.password = q(".c-pass").value;
+  if (q(".c-totp")) body.totp_secret = q(".c-totp").value.trim();
+  codebox.innerHTML = "";
+  setLine(card, "logging in…", false, true);
+  let r;
+  try {
+    r = await api(`/api/connections/${platform}/login-now`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+  } catch (e) { setLine(card, e.message, true); return; }
+
+  let boxVisible = false;
+  const poll = setInterval(async () => {
+    let run; try { run = await api("/api/connections/run/" + r.run_id); } catch (e) { return; }
+    if (run.stage === "awaiting_code" && !boxVisible) {
+      boxVisible = true;
+      setLine(card, run.prompt || "Enter the 6-digit code", false);
+      codebox.innerHTML =
+        `<input class="c-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"
+           placeholder="6-digit code" style="flex:1;min-width:120px;padding:10px;border-radius:10px">
+         <button class="btn primary c-codesend">Submit code</button>`;
+      const inp = codebox.querySelector(".c-code");
+      const send = codebox.querySelector(".c-codesend");
+      inp.focus();
+      const submit = async () => {
+        const code = inp.value.trim();
+        if (!code) return;
+        send.disabled = true;
+        try {
+          await api("/api/connections/login/code", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ run_id: r.run_id, code }) });
+          codebox.innerHTML = "";
+          boxVisible = false;
+          setLine(card, "submitting code…", false, true);
+        } catch (e) { send.disabled = false; setLine(card, e.message, true); }
+      };
+      send.onclick = submit;
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+    }
+    if (!run.done) return;
+    clearInterval(poll);
+    codebox.innerHTML = "";
+    if (run.error) { setLine(card, run.error, true); return; }
+    const res = run.result || {};
+    setLine(card, (res.ok ? "✅ " : "❌ ") + (res.detail || ""), !res.ok);
+    loadConnections();
+  }, 1500);
 }
 
 async function runConn(platform, card, kind) {

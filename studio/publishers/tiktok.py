@@ -11,11 +11,13 @@ from __future__ import annotations
 import logging
 
 from .base import PublishResult
-from .playwright_publisher import PlaywrightPublisher
+from .playwright_publisher import PlaywrightPublisher, code_for as _code_for
+from .session_provider import NeedsLogin
 
 logger = logging.getLogger(__name__)
 
 UPLOAD_URL = "https://www.tiktok.com/upload?lang=en"
+LOGIN_URL = "https://www.tiktok.com/login/phone-or-email/email"
 
 
 class TikTokPublisher(PlaywrightPublisher):
@@ -34,6 +36,33 @@ class TikTokPublisher(PlaywrightPublisher):
                 "log in to tiktok" not in (page.content() or "").lower()
         except Exception:
             return False
+
+    def login_steps(self, page, creds, get_code=None) -> None:
+        """Best-effort email/username login. TikTok frequently shows a slider
+        CAPTCHA on automated logins — when that happens this won't complete and
+        the caller reports ``needs_captcha`` (do the first login once at the PC)."""
+        page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        page.wait_for_timeout(3000)
+        try:
+            page.fill("input[name=username]", creds["username"].reveal(),
+                      timeout=10000)
+            page.fill("input[type=password]", creds["password"].reveal())
+            page.locator("button[type=submit]").first.click()
+        except Exception as exc:
+            raise NeedsLogin(f"tiktok login form not found ({exc})")
+        page.wait_for_timeout(5000)
+        content = (page.content() or "").lower()
+        if "verification" in content or "code" in content or "6-digit" in content:
+            code = _code_for(creds, get_code,
+                             "TikTok needs your 6-digit verification code")
+            if code:
+                try:
+                    page.fill("input[autocomplete=one-time-code], "
+                              "input[name=code]", code, timeout=8000)
+                    page.locator("button[type=submit]").first.click()
+                    page.wait_for_timeout(4000)
+                except Exception:
+                    pass
 
     def _do_publish(self, page, video_path, meta, log) -> PublishResult:
         caption = meta.caption_for("tiktok")

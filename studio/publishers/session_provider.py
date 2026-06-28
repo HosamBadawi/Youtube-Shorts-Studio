@@ -25,7 +25,11 @@ from .playwright_base import _import_sync_playwright, launch_persistent
 
 logger = logging.getLogger(__name__)
 
-ORDER = ("edge_profile", "saved_session", "credentials_login")
+# saved_session first: a session captured via the phone-login flow (or
+# login_setup) is the reliable path. edge_profile (reusing the live Edge logins)
+# is kept as a fallback but is unreliable on modern Edge/Chrome because App-Bound
+# Encryption stops automation from decrypting the host profile's cookies.
+ORDER = ("saved_session", "edge_profile", "credentials_login")
 
 
 class NeedsLogin(Exception):

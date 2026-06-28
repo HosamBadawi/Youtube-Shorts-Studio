@@ -34,6 +34,22 @@ from .session_provider import NeedsLogin, SessionProvider, SessionUnavailable
 logger = logging.getLogger(__name__)
 
 
+def code_for(creds, get_code, reason: str) -> str:
+    """Return a 6-digit 2FA/login code: auto-generated from a stored TOTP secret
+    if present, else requested from the phone UI via ``get_code(reason)``.
+    Returns "" when neither is available (caller raises ``NeedsLogin``)."""
+    try:
+        totp = creds["totp_secret"].reveal()
+    except Exception:
+        totp = ""
+    if totp:
+        from ..vault import totp_now
+        return totp_now(totp)
+    if get_code:
+        return (get_code(reason) or "").strip()
+    return ""
+
+
 class PlaywrightPublisher:
     name: str = ""
     home_url: str = ""
@@ -53,8 +69,11 @@ class PlaywrightPublisher:
                     log: list[str]) -> PublishResult:  # pragma: no cover
         raise NotImplementedError
 
-    def login_steps(self, page, creds) -> None:
-        """Default: this platform can't auto-login -> ask for human login."""
+    def login_steps(self, page, creds, get_code=None) -> None:
+        """Default: this platform can't auto-login -> ask for human login.
+
+        ``get_code(reason)`` (optional) returns a 6-digit 2FA/login code on
+        demand — auto from a stored TOTP secret, or by prompting the phone UI."""
         raise NeedsLogin(f"{self.name}: automatic login not supported")
 
     # --- publish (retry loop) ----------------------------------------------

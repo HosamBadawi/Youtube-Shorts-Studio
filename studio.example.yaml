@@ -85,13 +85,17 @@ screenshot_on_failure: true   # save a screenshot under workspace/failures/ on a
 health_check_timeout: 45.0
 
 # How a logged-in browser is obtained. auto = try the whole chain
-#   edge_profile -> saved_session -> credentials_login
-# or pin one. Per-platform overrides are set from the Connections screen.
+#   saved_session -> edge_profile -> credentials_login
+# saved_session (captured via the 🔐 Log in button on the Connections screen, or
+# `python -m studio.login_setup`) is the reliable path. NOTE: reusing your LIVE
+# Edge logins (edge_profile) is unreliable on modern Edge/Chrome — App-Bound
+# Encryption stops automation from decrypting the host profile's cookies, so the
+# automated browser shows up signed-out even though your own Edge is signed in.
 session_strategy: auto
-# session_strategy_overrides: { instagram: edge_profile }
+# session_strategy_overrides: { instagram: saved_session }
 
-# Reuse the logins saved in Microsoft Edge (Windows). Point at the Edge
-# "User Data" dir; leave blank to skip this strategy.
+# Reuse the logins saved in Microsoft Edge (Windows) — fallback only, see the
+# App-Bound Encryption note above. Point at the Edge "User Data" dir; blank skips.
 #   edge_user_data_dir: "C:/Users/<you>/AppData/Local/Microsoft/Edge/User Data"
 edge_user_data_dir: ""
 edge_profile_dir: "Default"   # which profile (see edge://version)

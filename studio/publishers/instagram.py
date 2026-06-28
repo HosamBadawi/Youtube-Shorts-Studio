@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from .base import PublishResult
-from .playwright_publisher import PlaywrightPublisher
+from .playwright_publisher import PlaywrightPublisher, code_for as _code_for
 from .session_provider import NeedsLogin
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class InstagramPublisher(PlaywrightPublisher):
         return PublishResult.failure(self.name,
                                      "no share confirmation seen", log=log)
 
-    def login_steps(self, page, creds) -> None:
+    def login_steps(self, page, creds, get_code=None) -> None:
         page.goto("https://www.instagram.com/accounts/login/",
                   wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
@@ -84,19 +84,19 @@ class InstagramPublisher(PlaywrightPublisher):
         content = _content(page)
         if "/challenge" in page.url or "security code" in content \
                 or "two-factor" in content or "6-digit" in content:
-            _submit_2fa(page, creds)
+            _submit_2fa(page, creds, get_code)
         _dismiss_dialogs(page)
 
 
-def _submit_2fa(page, creds) -> None:
-    totp = creds["totp_secret"].reveal()
-    if not totp:
+def _submit_2fa(page, creds, get_code=None) -> None:
+    code = _code_for(creds, get_code,
+                     "Instagram sent a 6-digit login code — enter it")
+    if not code:
         raise NeedsLogin("instagram 2FA required — add a TOTP secret or log in "
                          "on the host")
-    from ..vault import totp_now
     try:
         page.fill("input[name=verificationCode], input[autocomplete=one-time-code]",
-                  totp_now(totp), timeout=8000)
+                  code, timeout=8000)
         _click_text(page, ["Confirm", "Continue", "Next"])
         page.wait_for_timeout(4000)
     except Exception:

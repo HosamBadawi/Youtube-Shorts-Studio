@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from .base import PublishResult
-from .playwright_publisher import PlaywrightPublisher
+from .playwright_publisher import PlaywrightPublisher, code_for as _code_for
 from .session_provider import NeedsLogin
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class FacebookPublisher(PlaywrightPublisher):
         return PublishResult.failure(self.name,
                                      "no publish confirmation seen", log=log)
 
-    def login_steps(self, page, creds) -> None:
+    def login_steps(self, page, creds, get_code=None) -> None:
         page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
         _dismiss_cookies(page)
@@ -73,14 +73,14 @@ class FacebookPublisher(PlaywrightPublisher):
         page.wait_for_timeout(5000)
         if "checkpoint" in page.url or "two-factor" in _content(page) \
                 or "login code" in _content(page):
-            totp = creds["totp_secret"].reveal()
-            if not totp:
+            code = _code_for(creds, get_code,
+                             "Facebook needs your 6-digit login code")
+            if not code:
                 raise NeedsLogin("facebook 2FA required — add a TOTP secret or "
                                  "log in on the host")
-            from ..vault import totp_now
             try:
                 page.fill("input[name=approvals_code], input[autocomplete="
-                          "one-time-code]", totp_now(totp), timeout=8000)
+                          "one-time-code]", code, timeout=8000)
                 _click_text(page, ["Continue", "Submit", "Next"])
                 page.wait_for_timeout(4000)
             except Exception:

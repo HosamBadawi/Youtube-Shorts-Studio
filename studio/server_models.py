@@ -110,12 +110,16 @@ def build_models_router(cfg, pipeline, vault, require_auth) -> APIRouter:
         provider = str(body.get("provider", cfg.llm_provider)).lower()
         model = str(body.get("model", "")).strip()
         if provider == "ollama":
+            # First call to a cold model loads it into VRAM and can take 1–2 min
+            # for a big (35B) model — give it the configured generation timeout,
+            # not a short one, so "model still loading" isn't reported as a fail.
             client = OllamaClient(cfg.ollama_url, model or cfg.ollama_model,
-                                  cfg.ollama_enabled, timeout=30)
+                                  cfg.ollama_enabled,
+                                  timeout=max(float(cfg.ollama_timeout), 180.0))
         elif provider in CLOUD_PROVIDERS:
             key = (vault.get_api_key(provider)
                    if (vault and vault.enabled) else "")
-            client = CloudLLM(provider, model, key, timeout=30)
+            client = CloudLLM(provider, model, key, timeout=60)
         else:
             raise HTTPException(400, "unknown provider")
         if not client.available():
