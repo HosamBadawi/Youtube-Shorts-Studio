@@ -228,6 +228,10 @@ function cardHtml(job) {
         <button class="btn ghost b-regen">✨ AI</button>
         <button class="btn ghost b-save">Save</button>
       </div>
+      <details class="perplat"><summary>✏️ Customize per platform (optional)</summary>
+        <p class="muted small" style="margin:6px 0">Leave a field blank to use the caption/hashtags above. Tap <b>Save</b> to keep changes.</p>
+        <div class="pp-body"></div>
+      </details>
       <div class="pf-row"></div>
       <div class="row" style="margin-top:10px">
         <button class="btn ghost b-rehearse">🧪 Rehearse</button>
@@ -275,10 +279,11 @@ function updateCard(card, job) {
   const v = q(".prev"); if (!v.src) v.src = "/api/preview/" + job.id;
   q(".meta").classList.remove("hidden");
   if (!card.dataset.loaded) {
-    fillMeta(card, job.meta);
     q(".pf-row").innerHTML = STATE.platforms.map((p) =>
       `<span class="pf on" data-p="${p}">${icon(p)} ${p}</span>`).join("");
     q(".pf-row").querySelectorAll(".pf").forEach((pf) => pf.onclick = () => pf.classList.toggle("on"));
+    q(".pp-body").innerHTML = STATE.platforms.map((p) => ppHtml(p)).join("");
+    fillMeta(card, job.meta);           // fill base + per-platform after fields exist
     card.dataset.loaded = "1";
   }
   const uploaded = Object.values(job.results || {}).some((r) => r.ok);
@@ -299,8 +304,30 @@ function pollJob(id, card) {
     }
   }, 2000);
 }
+// Per-platform editor block (description + hashtags; YouTube also a title).
+function ppHtml(p) {
+  const yt = p === "youtube";
+  return `<div class="pp" data-pp="${p}">
+    <div class="pp-h">${icon(p)} ${p}</div>
+    ${yt ? `<input class="pp-title" type="text" placeholder="title — blank = use the one above">` : ""}
+    <textarea class="pp-cap" rows="2" placeholder="description — blank = use the caption above"></textarea>
+    <input class="pp-tags" type="text" placeholder="hashtags — blank = use the ones above">
+  </div>`;
+}
 async function saveMeta(id, card) {
-  const meta = { title: card.querySelector(".t-title").value, caption: card.querySelector(".t-cap").value, hashtags: card.querySelector(".t-tags").value };
+  const meta = {
+    title: card.querySelector(".t-title").value,
+    caption: card.querySelector(".t-cap").value,
+    hashtags: card.querySelector(".t-tags").value,
+    overrides: {},
+  };
+  card.querySelectorAll(".pp").forEach((el) => {
+    const o = {};
+    const t = el.querySelector(".pp-title"); if (t && t.value.trim()) o.title = t.value.trim();
+    const c = el.querySelector(".pp-cap").value.trim(); if (c) o.caption = c;
+    const g = el.querySelector(".pp-tags").value.trim(); if (g) o.hashtags = g;
+    if (Object.keys(o).length) meta.overrides[el.dataset.pp] = o;
+  });
   const r = await api(`/api/job/${id}/meta`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) });
   return r.meta;
 }
@@ -308,6 +335,13 @@ function fillMeta(card, meta) {
   card.querySelector(".t-title").value = meta.title || "";
   card.querySelector(".t-cap").value = meta.caption || "";
   card.querySelector(".t-tags").value = (meta.hashtags || []).join(" ");
+  const ov = meta.overrides || {};
+  card.querySelectorAll(".pp").forEach((el) => {
+    const o = ov[el.dataset.pp] || {};
+    const t = el.querySelector(".pp-title"); if (t) t.value = o.title || "";
+    el.querySelector(".pp-cap").value = o.caption || "";
+    el.querySelector(".pp-tags").value = Array.isArray(o.hashtags) ? o.hashtags.join(" ") : (o.hashtags || "");
+  });
 }
 function renderResults(card, job) {
   const r = job.results || {}; if (!Object.keys(r).length) return;

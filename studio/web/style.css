@@ -192,3 +192,12 @@ select[size] { min-height: 132px; }
   .content { max-width: 860px; padding: 14px 28px 40px; }
   .shorts-grid { grid-template-columns: 1fr 1fr; }
 }
+
+/* per-platform metadata editor */
+.perplat { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface2); padding: 0 12px; }
+.perplat > summary { cursor: pointer; padding: 12px 2px; font-weight: 600; font-size: 14px; color: var(--fg); list-style: none; }
+.perplat > summary::-webkit-details-marker { display: none; }
+.perplat[open] { padding-bottom: 12px; }
+.pp { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.pp-h { font-size: 13px; font-weight: 700; margin-bottom: 6px; text-transform: capitalize; }
+.pp textarea, .pp input { margin-bottom: 6px; font-size: 15px; padding: 10px 12px; }
