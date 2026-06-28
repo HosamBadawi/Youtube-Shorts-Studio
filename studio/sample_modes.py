@@ -72,7 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     if duration > cfg.keep_whole_if_under_seconds and tr.available:
         print("Selecting highlight…")
         picked = ollama.pick_segment(tr.timestamped(), duration,
-                                     cfg.target_short_seconds)
+                                     cfg.target_short_seconds,
+                                     cfg.min_short_seconds, cfg.max_short_seconds)
         if picked:
             seg = picked
     seg = _enforce_bounds(seg, cfg.min_short_seconds, cfg.max_short_seconds,

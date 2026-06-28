@@ -79,7 +79,8 @@ class StudioPipeline:
                 job.stage = "selecting highlight"
                 self.store.update(job)
                 span = self.llm.pick_segment(
-                    tr.timestamped(), job.duration, self.cfg.target_short_seconds)
+                    tr.timestamped(), job.duration, self.cfg.target_short_seconds,
+                    self.cfg.min_short_seconds, self.cfg.max_short_seconds)
                 if span is None:  # LLM failed -> sensible default window
                     span = (0.0, min(self.cfg.target_short_seconds, job.duration))
                 span = _enforce_bounds(span, self.cfg.min_short_seconds,
@@ -240,7 +241,7 @@ class StudioPipeline:
         segs: list[tuple[float, float, str]] = []
         if tr.available:
             segs = self.llm.pick_segments(tr.timestamped(), duration, count,
-                                             target_len)
+                                             target_len, min_len, max_len)
         if not segs:  # no transcript / model -> at least one default window
             segs = [(0.0, min(target_len, duration), "")]
         segs = [(*_enforce_bounds((s, e), min_len, max_len, duration), topic)

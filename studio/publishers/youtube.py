@@ -1,8 +1,8 @@
 """YouTube Shorts publisher via the official YouTube Data API v3 (free).
 
 A video is treated as a Short automatically by YouTube when it is vertical and
-<= 60s; we additionally ensure ``#Shorts`` is present in the title (handled in
-:meth:`VideoMeta.title_for`).
+<= 180s (3 min, raised from 60s in late 2024); we additionally ensure ``#Shorts``
+is present in the title (handled in :meth:`VideoMeta.title_for`).
 
 One-time setup (see STUDIO_README.md):
   1. Create an OAuth *Desktop* client in Google Cloud Console, enable the

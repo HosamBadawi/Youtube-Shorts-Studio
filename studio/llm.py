@@ -59,13 +59,16 @@ class _BaseLLM:
 
     # --- high-level (provider-agnostic) ------------------------------------
     def pick_segment(self, timestamped_transcript: str, total_duration: float,
-                     target_seconds: float) -> tuple[float, float] | None:
+                     target_seconds: float, min_seconds: float | None = None,
+                     max_seconds: float | None = None
+                     ) -> tuple[float, float] | None:
         if not timestamped_transcript.strip():
             return None
         self.resolve_model()
+        lo, hi = _bounds(target_seconds, min_seconds, max_seconds)
         prompt = _SEGMENT_PROMPT.format(
-            target=int(target_seconds), total=int(total_duration),
-            transcript=timestamped_transcript[:8000])
+            target=int(target_seconds), min=int(lo), max=int(hi),
+            total=int(total_duration), transcript=timestamped_transcript[:8000])
         obj = _loads(self._generate(prompt, want_json=True))
         if not obj:
             return None
@@ -79,13 +82,17 @@ class _BaseLLM:
         return (start, end)
 
     def pick_segments(self, timestamped_transcript: str, total_duration: float,
-                      count: int, target_seconds: float
+                      count: int, target_seconds: float,
+                      min_seconds: float | None = None,
+                      max_seconds: float | None = None
                       ) -> list[tuple[float, float, str]]:
         if not timestamped_transcript.strip() or count < 1:
             return []
         self.resolve_model()
+        lo, hi = _bounds(target_seconds, min_seconds, max_seconds)
         prompt = _MULTI_SEGMENT_PROMPT.format(
-            count=count, target=int(target_seconds), total=int(total_duration),
+            count=count, target=int(target_seconds), min=int(lo), max=int(hi),
+            total=int(total_duration),
             transcript=timestamped_transcript[:16000])
         obj = _loads(self._generate(prompt, want_json=True))
         if not obj:
@@ -353,6 +360,17 @@ _FAMILY_BONUS = {
 }
 
 
+def _bounds(target: float, lo: float | None, hi: float | None
+            ) -> tuple[float, float]:
+    """Resolve the (min, max) seconds shown to the model. Falls back to a band
+    around ``target`` when explicit bounds aren't passed."""
+    lo = float(lo) if lo else max(5.0, target * 0.85)
+    hi = float(hi) if hi else max(lo + 1.0, target * 1.15)
+    if lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
+
+
 def _is_embedding(name: str) -> bool:
     n = name.lower()
     return any(h in n for h in _EMBEDDING_HINTS)
@@ -405,8 +423,8 @@ with [mm:ss] timestamps.
 
 Pick the most self-contained, hook-strong, emotionally engaging span. It should \
 start on a strong hook and end on a satisfying or curiosity-driving note. The clip \
-MUST be between 50 and 60 seconds long (target about {target}s). Never pick a span \
-shorter than 50 seconds.
+MUST be between {min} and {max} seconds long (target about {target}s). Never pick a \
+span shorter than {min} seconds.
 
 Transcript:
 {transcript}
@@ -422,7 +440,7 @@ transcript with [mm:ss] timestamps.
 Pick {count} NON-OVERLAPPING segments. Each one must:
 - cover a DIFFERENT topic / self-contained idea (no two shorts about the same point),
 - start on a strong hook and end on a satisfying or curiosity-driving beat,
-- be between 50 and 60 seconds long (target ~{target}s), never under 50.
+- be between {min} and {max} seconds long (target ~{target}s), never under {min}.
 Spread them across the whole video so they don't overlap.
 
 Transcript:

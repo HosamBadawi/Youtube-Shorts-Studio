@@ -80,7 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     # 2. ask the LLM for N distinct, non-overlapping segments ----------------
     print(f"Asking {cfg.ollama_model} for {count} distinct segments…")
     segments = ollama.pick_segments(tr.timestamped(), duration, count,
-                                    cfg.target_short_seconds)
+                                    cfg.target_short_seconds,
+                                    cfg.min_short_seconds, cfg.max_short_seconds)
     if not segments:
         print("[FAIL] the model returned no usable segments.")
         return 1
