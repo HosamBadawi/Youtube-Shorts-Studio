@@ -33,11 +33,32 @@ class FacebookPublisher(PlaywrightPublisher):
             pass
         return "/login" not in page.url
 
-    def _do_publish(self, page, video_path, meta, log) -> PublishResult:
-        caption = meta.caption_for("facebook")
+    def _open_reel_composer(self, page, log) -> None:
+        """Open the Create-reel composer. When a Page URL is configured, start the
+        reel FROM the Page so it's posted as the Page (the Page has its own 'Reel'
+        button); otherwise use the personal /reels/create. Falls back to
+        /reels/create if the Page button can't be found."""
+        url = (self.cfg.facebook_page_url or "").strip()
+        if url:
+            log.append("opening Page reel composer")
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_timeout(5000)
+            _dismiss_cookies(page)
+            if _click_text(page, ["Reel"], timeout=6000):
+                page.wait_for_timeout(4000)
+                try:
+                    if page.locator("input[type=file]").count() > 0:
+                        return
+                except Exception:
+                    pass
+            log.append("Page 'Reel' button not found — using /reels/create")
         page.goto(REELS_URL, wait_until="domcontentloaded")
         page.wait_for_timeout(5000)
         _dismiss_cookies(page)
+
+    def _do_publish(self, page, video_path, meta, log) -> PublishResult:
+        caption = meta.caption_for("facebook")
+        self._open_reel_composer(page, log)
         log.append("selecting file")
         page.locator("input[type=file]").first.set_input_files(
             video_path, timeout=30000)

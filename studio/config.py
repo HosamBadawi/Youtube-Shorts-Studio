@@ -109,6 +109,12 @@ class StudioConfig:
     one_per_day: bool = False               # block a 2nd publish on the same day
     playwright_headless: bool = True        # set False to watch automation run
 
+    # Post Facebook Reels to a PAGE instead of your personal profile. Set this to
+    # the Page URL (e.g. https://www.facebook.com/profile.php?id=...) and the
+    # publisher starts the Reel from the Page so it's posted as the Page. Blank =
+    # post to your personal profile.
+    facebook_page_url: str = ""
+
     # Folder the web app browses for local source videos ("" = use download_dir).
     media_library: str = ""
 
