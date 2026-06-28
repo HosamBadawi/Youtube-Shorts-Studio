@@ -201,6 +201,11 @@ class StudioConfig:
         return self.workspace_path / "failures"
 
     @property
+    def rehearsals_dir(self) -> Path:
+        # Dry-run composer screenshots, served (auth-gated) via /api/rehearsal.
+        return self.workspace_path / "rehearsals"
+
+    @property
     def secrets_dir(self) -> Path:
         return Path(self.vault_db).expanduser().resolve().parent
 
@@ -226,7 +231,8 @@ class StudioConfig:
     def ensure_dirs(self) -> None:
         for p in (self.incoming_dir, self.rendered_dir, self.sessions_dir,
                   self.download_dir, self.shorts_dir, self.uploaded_dir,
-                  self.library_path, self.failures_dir, self.secrets_dir):
+                  self.library_path, self.failures_dir, self.rehearsals_dir,
+                  self.secrets_dir):
             p.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------------

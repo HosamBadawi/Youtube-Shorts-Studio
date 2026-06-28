@@ -47,6 +47,8 @@ class FacebookPublisher(PlaywrightPublisher):
                 page.wait_for_timeout(2500)
         log.append("writing description")
         _set_caption(page, caption)
+        if self.dry_run:
+            return self.dry_stop(page, log)
         log.append("publishing")
         if not _click_text(page, ["Publish", "Share now", "Post"]):
             return PublishResult.failure(self.name, "no Publish button", log=log)

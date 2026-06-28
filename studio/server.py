@@ -348,6 +348,34 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         worker.submit(pipeline.publish_job, job, platforms)
         return {"ok": True, "platforms": platforms}
 
+    @app.post("/api/job/{job_id}/rehearse")
+    async def rehearse(job_id: str, request: Request,
+                       _: None = Depends(require_auth)):
+        """Dry run: drive each platform's upload to the final post button and
+        screenshot the ready composer — but post NOTHING. Safe to run anytime."""
+        job = store.get(job_id)
+        if not job:
+            raise HTTPException(404, "job not found")
+        if not job.output_path or job.status not in (STATUS_READY, "done"):
+            raise HTTPException(409, "short is not ready yet")
+        body = await request.json()
+        platforms = [p for p in body.get("platforms", [])
+                     if p in cfg.enabled_platforms]
+        if not platforms:
+            raise HTTPException(400, "no valid platforms selected")
+        worker.submit(pipeline.publish_job, job, platforms, dry_run=True)
+        return {"ok": True, "platforms": platforms, "dry_run": True}
+
+    @app.get("/api/rehearsal/{name}")
+    async def rehearsal(name: str, _: None = Depends(require_auth)):
+        # Serve a dry-run screenshot. Validate the name stays inside the dir.
+        if "/" in name or "\\" in name or not name.endswith(".png"):
+            raise HTTPException(400, "bad name")
+        p = (cfg.rehearsals_dir / name).resolve()
+        if cfg.rehearsals_dir.resolve() not in p.parents or not p.exists():
+            raise HTTPException(404, "no such screenshot")
+        return FileResponse(p, media_type="image/png")
+
     @app.get("/api/preview/{job_id}")
     async def preview(job_id: str, _: None = Depends(require_auth)):
         job = store.get(job_id)

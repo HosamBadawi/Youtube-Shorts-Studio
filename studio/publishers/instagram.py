@@ -57,6 +57,8 @@ class InstagramPublisher(PlaywrightPublisher):
                 page.wait_for_timeout(2500)
         log.append("writing caption")
         _set_caption(page, caption)
+        if self.dry_run:
+            return self.dry_stop(page, log)
         log.append("sharing")
         if not _click_text(page, ["Share"]):
             return PublishResult.failure(self.name, "no Share button", log=log)

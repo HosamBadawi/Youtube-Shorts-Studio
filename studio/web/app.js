@@ -229,7 +229,11 @@ function cardHtml(job) {
         <button class="btn ghost b-save">Save</button>
       </div>
       <div class="pf-row"></div>
-      <button class="btn primary block b-pub">🚀 Publish</button>
+      <div class="row" style="margin-top:10px">
+        <button class="btn ghost b-rehearse">🧪 Rehearse</button>
+        <button class="btn primary b-pub">🚀 Publish</button>
+      </div>
+      <p class="muted small" style="margin:6px 0 0">Rehearse = drive each upload to the post button and screenshot it — posts nothing.</p>
       <div class="results"></div>
     </div>`;
 }
@@ -249,6 +253,17 @@ function wireCard(card, id) {
       await saveMeta(id, card);
       await api(`/api/job/${id}/publish`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platforms }) });
       setStatus(card, "publishing…", false); q(".b-pub").disabled = true;
+      pollJob(id, card);
+    } catch (e) { setStatus(card, e.message, true); }
+  };
+  q(".b-rehearse").onclick = async () => {
+    const platforms = [...card.querySelectorAll(".pf.on")].map((p) => p.dataset.p);
+    if (!platforms.length) { setStatus(card, "Pick a platform", true); return; }
+    try {
+      await saveMeta(id, card);
+      await api(`/api/job/${id}/rehearse`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platforms }) });
+      setStatus(card, "rehearsing… (driving each upload, posting nothing)", false, true);
+      q(".b-rehearse").disabled = true; q(".b-pub").disabled = true;
       pollJob(id, card);
     } catch (e) { setStatus(card, e.message, true); }
   };
@@ -276,7 +291,11 @@ function pollJob(id, card) {
     let j; try { j = await api("/api/job/" + id); } catch (e) { return; }
     updateCard(card, j);
     if (["done", "error", "ready"].includes(j.status) && j.status !== "publishing") {
-      if (Object.keys(j.results || {}).length || j.status === "error") { clearInterval(t); card.querySelector(".b-pub").disabled = false; }
+      if (Object.keys(j.results || {}).length || j.status === "error") {
+        clearInterval(t);
+        card.querySelector(".b-pub").disabled = false;
+        const rb = card.querySelector(".b-rehearse"); if (rb) rb.disabled = false;
+      }
     }
   }, 2000);
 }
@@ -294,7 +313,9 @@ function renderResults(card, job) {
   const r = job.results || {}; if (!Object.keys(r).length) return;
   card.querySelector(".results").innerHTML = Object.entries(r).map(([p, res]) =>
     `<div class="result"><span>${icon(p)} ${p}</span>${res.ok
-      ? `<span class="ok">✓${res.url ? ` <a href="${res.url}" target="_blank">view</a>` : ""}</span>`
+      ? (res.dry_run
+        ? `<span class="ok">🧪 ready${res.url ? ` <a href="${res.url}" target="_blank">view composer</a>` : ""} <span class="muted small">· not posted</span></span>`
+        : `<span class="ok">✓${res.url ? ` <a href="${res.url}" target="_blank">view</a>` : ""}</span>`)
       : `<span class="bad">✗ ${res.needs_login ? "login needed" : esc(res.error)}</span>`}</div>`).join("");
 }
 function setStatus(card, text, bad, spin) {

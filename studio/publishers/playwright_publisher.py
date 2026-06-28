@@ -60,6 +60,7 @@ class PlaywrightPublisher:
         self.provider = SessionProvider(cfg, self.name, vault, self.home_url,
                                         self.is_logged_in, self.login_steps)
         self.on_attempt = None  # optional callback(platform, n, max) for the UI
+        self.dry_run = False    # rehearsal: drive the flow but never click post
 
     # --- subclass hooks -----------------------------------------------------
     def is_logged_in(self, page) -> bool:  # pragma: no cover - overridden
@@ -194,6 +195,24 @@ class PlaywrightPublisher:
                 pass
             page.wait_for_timeout(1000)
         return False
+
+    def dry_stop(self, page, log: list[str]) -> PublishResult:
+        """Rehearsal stop: the composer is filled and the final post button is in
+        reach — screenshot it and return a dry-run success WITHOUT posting. Call
+        this immediately before the real Share/Post/Publish click."""
+        log.append("DRY RUN — composer ready, stopping before the post click")
+        url = ""
+        try:
+            self.cfg.rehearsals_dir.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            name = f"{self.name}_{stamp}.png"
+            page.screenshot(path=str(self.cfg.rehearsals_dir / name),
+                            full_page=False)
+            url = f"/api/rehearsal/{name}"
+            log.append(f"rehearsal screenshot: {name}")
+        except Exception as exc:
+            log.append(f"rehearsal screenshot failed: {exc}")
+        return PublishResult.rehearsed(self.name, shot_url=url, log=log)
 
     def _maybe_shot(self, page, n: int, log: list[str]) -> None:
         if not self.cfg.screenshot_on_failure:

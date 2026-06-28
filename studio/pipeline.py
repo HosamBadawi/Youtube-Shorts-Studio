@@ -139,25 +139,28 @@ class StudioPipeline:
     # ======================================================================
     # PUBLISH
     # ======================================================================
-    def publish_job(self, job: Job, platforms: list[str]) -> Job:
+    def publish_job(self, job: Job, platforms: list[str],
+                    dry_run: bool = False) -> Job:
         from .publishers import get_publisher
 
+        verb = "rehearsing" if dry_run else "publishing"
         job.status = STATUS_PUBLISHING
-        job.stage = "publishing"
+        job.stage = verb
         self.store.update(job)
 
         any_ok = False
         for platform in platforms:
-            job.stage = f"publishing to {platform}"
+            job.stage = f"{verb} {platform}"
             self.store.update(job)
 
             def on_attempt(p, n, total, _job=job):
-                _job.stage = f"publishing to {p} (try {n}/{total})"
+                _job.stage = f"{verb} {p} (try {n}/{total})"
                 self.store.update(_job)
 
             try:
                 pub = get_publisher(platform, self.cfg, self.vault)
                 setattr(pub, "on_attempt", on_attempt)
+                setattr(pub, "dry_run", dry_run)
                 result = pub.publish(job.output_path, job.meta)
             except Exception as exc:  # pragma: no cover
                 from .publishers.base import PublishResult
@@ -166,7 +169,8 @@ class StudioPipeline:
             any_ok = any_ok or result.ok
             self.store.update(job)
 
-        if any_ok:
+        # A rehearsal never counts as a publish: don't mark the day or move the file.
+        if any_ok and not dry_run:
             self.store.mark_published_today(job.id)
             self._move_to_uploaded(job)
         job.status = STATUS_DONE

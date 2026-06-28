@@ -32,6 +32,7 @@ class YouTubePublisher:
     def __init__(self, cfg: StudioConfig, vault=None) -> None:
         self.cfg = cfg
         self.vault = vault  # unused (official API); kept for a uniform signature
+        self.dry_run = False  # rehearsal: verify auth but don't upload
 
     # ------------------------------------------------------------------
     def health(self):
@@ -95,6 +96,11 @@ class YouTubePublisher:
         except Exception as exc:
             return PublishResult.failure(self.name, str(exc), needs_login=True,
                                          log=log)
+
+        if self.dry_run:
+            log.append("DRY RUN — authorized; would upload via the API "
+                       "(nothing posted)")
+            return PublishResult.rehearsed(self.name, log=log)
 
         try:
             youtube = build("youtube", "v3", credentials=creds)

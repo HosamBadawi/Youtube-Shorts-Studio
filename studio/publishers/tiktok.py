@@ -75,6 +75,8 @@ class TikTokPublisher(PlaywrightPublisher):
         log.append("waiting for processing")
         frame.wait_for_timeout(8000)
         _set_caption(frame, caption, log)
+        if self.dry_run:
+            return self.dry_stop(page, log)
         log.append("clicking Post")
         if not _click_post(frame):
             return PublishResult.failure(self.name, "no Post button", log=log)

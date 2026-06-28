@@ -13,9 +13,10 @@ from ..metadata import VideoMeta
 class PublishResult:
     platform: str
     ok: bool
-    url: str = ""          # link to the published post, when known
+    url: str = ""          # link to the published post (or a rehearsal screenshot)
     error: str = ""        # human-readable failure reason
     needs_login: bool = False  # True -> run `python -m studio.login_setup <p>`
+    dry_run: bool = False  # True -> rehearsal: reached the post step, posted nothing
     log: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -25,12 +26,20 @@ class PublishResult:
             "url": self.url,
             "error": self.error,
             "needs_login": self.needs_login,
+            "dry_run": self.dry_run,
             "log": self.log,
         }
 
     @classmethod
     def success(cls, platform: str, url: str = "", log=None) -> "PublishResult":
         return cls(platform, True, url=url, log=list(log or []))
+
+    @classmethod
+    def rehearsed(cls, platform: str, shot_url: str = "", log=None
+                  ) -> "PublishResult":
+        """A dry run that reached the final post step without posting."""
+        return cls(platform, True, url=shot_url, dry_run=True,
+                   log=list(log or []))
 
     @classmethod
     def failure(cls, platform: str, error: str, *, needs_login: bool = False,
