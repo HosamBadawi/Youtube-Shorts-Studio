@@ -108,7 +108,9 @@ class Renderer:
                 t = idx / fps
                 out = strategy.render_frame(frame, t)
                 out = self._coerce(out)
-                proc.stdin.write(out.tobytes())
+                # Zero-copy pipe write: _coerce guarantees a C-contiguous uint8
+                # BGR buffer, so memoryview avoids the per-frame tobytes() copy.
+                proc.stdin.write(memoryview(out))
                 written += 1
                 idx += 1
                 if progress_every and written % progress_every == 0 and n_frames:
@@ -144,4 +146,8 @@ class Renderer:
             frame = cv2.resize(frame, (self.p.out_w, self.p.out_h))
         if frame.ndim == 2:
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-        return np.ascontiguousarray(frame)
+        # Strategies already return C-contiguous canvases, so this is normally a
+        # no-op; only the rare view path pays for a copy.
+        if not frame.flags["C_CONTIGUOUS"]:
+            frame = np.ascontiguousarray(frame)
+        return frame

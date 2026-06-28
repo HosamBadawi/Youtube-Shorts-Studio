@@ -51,7 +51,12 @@ class ClipAnalyzer:
             use_pyscenedetect=self.s.use_pyscenedetect,
         )
 
-    def analyze(self, video_path: str) -> ClipAnalysis:
+    def analyze(self, video_path: str, faces_only: bool = False) -> ClipAnalysis:
+        # faces_only: the caller forced a (non scene-aware) mode, so the
+        # classifier is bypassed. Motion (dense optical flow), overlay (Canny)
+        # and scene detection (a whole extra decode pass) feed ONLY the
+        # classifier, so we skip them — the face track that the focus/crop_blur
+        # strategies consume is unchanged, so the rendered output is identical.
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise FileNotFoundError(f"Cannot open video: {video_path}")
@@ -109,10 +114,11 @@ class ClipAnalyzer:
                 largest_face_area_ratio.append(biggest.box.area / (w * h))
                 dominant_centers.append((biggest.box.cx, biggest.box.cy))
 
-            m = motion.update(gray, diag)
-            if m is not None:
-                motion_samples.append(m)
-            per_frame_overlay.append(overlay_score(frame))
+            if not faces_only:
+                m = motion.update(gray, diag)
+                if m is not None:
+                    motion_samples.append(m)
+                per_frame_overlay.append(overlay_score(gray))
 
             sampled += 1
             idx += 1
@@ -120,7 +126,8 @@ class ClipAnalyzer:
         cap.release()
         self.face_detector.close()
 
-        scenes = self.scene_detector.detect(video_path, duration, fps)
+        scenes = ([] if faces_only
+                  else self.scene_detector.detect(video_path, duration, fps))
         analysis = self._summarize(
             duration, fps, w, h, sampled, faces, per_frame_face_counts,
             per_frame_overlay, motion_samples, largest_face_area_ratio,

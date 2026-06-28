@@ -16,8 +16,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
-
 from .analyzer import AnalyzerSettings, ClipAnalyzer
 from .classifier import ClassifierThresholds, ReframeClassifier
 from .renderer import Renderer
@@ -67,11 +65,15 @@ class AdaptiveReframePipeline:
         if not Path(in_path).exists():
             raise FileNotFoundError(in_path)
 
-        analysis = self.analyzer.analyze(in_path)
+        # A forced (non scene-aware) mode bypasses the classifier, so the
+        # analyzer can skip its classifier-only signals (motion/overlay/scenes)
+        # and the extra scene-detect decode pass — the face track is unchanged.
+        forced = ReframeMode(force_mode) if force_mode is not None else None
+        faces_only = forced is not None and forced != ReframeMode.SCENE_AWARE
+        analysis = self.analyzer.analyze(in_path, faces_only=faces_only)
 
-        if force_mode is not None:
-            mode = ReframeMode(force_mode)
-            decision = ReframeDecision(mode, 1.0, ["forced by caller/config"])
+        if forced is not None:
+            decision = ReframeDecision(forced, 1.0, ["forced by caller/config"])
         else:
             decision = self.classifier.classify(analysis)
         logger.info("Decision: %s", decision.explain())
@@ -87,9 +89,9 @@ class AdaptiveReframePipeline:
         return result
 
     def _context(self, video_path: str, analysis: ClipAnalysis) -> RenderContext:
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or analysis.fps or 30.0
-        cap.release()
+        # analysis.fps is already CAP_PROP_FPS from the analyze pass; the encode
+        # fps is read independently in the renderer, so no re-open is needed here.
+        fps = analysis.fps or 30.0
         return RenderContext(
             analysis=analysis,
             params=self.params,

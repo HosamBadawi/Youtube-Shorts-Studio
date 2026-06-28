@@ -185,14 +185,14 @@ class MotionEstimator:
         return float(np.median(mag) / small_diag * 100.0)
 
 
-def overlay_score(frame: np.ndarray) -> float:
+def overlay_score(gray: np.ndarray) -> float:
     """Heuristic prevalence of text/graphics overlays in a frame (0..1).
 
-    Looks for dense horizontal edge structure concentrated in the bands where
-    captions / lower-thirds / titles usually live (top 18% and bottom 28%).
+    Takes an already-grayscale frame (the analyzer computes it once per sampled
+    frame and reuses it here). Looks for dense horizontal edge structure in the
+    bands where captions / lower-thirds / titles usually live.
     """
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     edges = cv2.Canny(gray, 80, 180)
     top = edges[: int(h * 0.18)]
