@@ -27,6 +27,8 @@ import logging
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+
+from starlette.concurrency import run_in_threadpool
 from pathlib import Path
 
 from fastapi import (Depends, FastAPI, File, Form, HTTPException, Request,
@@ -82,11 +84,23 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     pipeline = StudioPipeline(cfg, store, vault)
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio")
     net = ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-net")
+    # Publishing drives a browser (no GPU). Its own single-slot pool keeps a long
+    # publish from head-of-line-blocking GPU renders on `worker`, while staying
+    # single-slot so two browser sessions never contend over the live Edge profile.
+    publisher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-pub")
     gate_key = _gate_key(cfg)
     expected = _token(gate_key, cfg.app_password) if cfg.app_password else ""
     batches: dict[str, dict] = {}    # pre-render progress per batch
     downloads: dict[str, dict] = {}  # progress per download job
     runs: dict[str, dict] = {}       # progress per connection health/login run
+
+    def _cap(d: dict, limit: int = 40) -> None:
+        """Evict completed entries so these progress dicts don't grow unbounded
+        on a 24/7 host (only ever-`done` entries are dropped)."""
+        if len(d) > limit:
+            done = [k for k, v in list(d.items()) if v.get("done")]
+            for k in done[: len(d) - limit]:
+                d.pop(k, None)
 
     if cfg.app_password == DEFAULT_PASSWORD:
         logger.warning("app_password is still the default '%s' — change it in "
@@ -139,13 +153,20 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     async def status(request: Request):
         authed = (not expected) or hmac.compare_digest(
             request.cookies.get(COOKIE) or "", expected)
+        # available()/resolve_model() do blocking Ollama HTTP — probe once, off the
+        # event loop, so a slow/down Ollama can't stall unrelated requests.
+        ollama_up = False
+        model = cfg.llm_model or cfg.ollama_model
+        if authed:
+            def _probe():
+                up = pipeline.llm.available()
+                return up, (pipeline.llm.resolve_model() if up else model)
+            ollama_up, model = await run_in_threadpool(_probe)
         return {
             "authed": authed,
             "needs_password": bool(expected),
-            "ollama": pipeline.llm.available() if authed else False,
-            "ollama_model": (pipeline.llm.resolve_model()
-                             if authed and pipeline.llm.available()
-                             else (cfg.llm_model or cfg.ollama_model)),
+            "ollama": ollama_up,
+            "ollama_model": model,
             "llm_provider": cfg.llm_provider,
             "platforms": list(cfg.enabled_platforms),
             "reframe_mode": cfg.reframe_mode,
@@ -182,6 +203,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         if not url.strip():
             raise HTTPException(400, "no URL provided")
         did = uuid.uuid4().hex[:12]
+        _cap(downloads)
         downloads[did] = {"stage": "starting", "done": False, "error": "",
                           "file": ""}
 
@@ -261,6 +283,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         if mn and mx and mn > mx:
             mn, mx = mx, mn
         batch_id = uuid.uuid4().hex[:12]
+        _cap(batches)
         batches[batch_id] = {"stage": "starting", "done": False, "error": ""}
 
         def on_stage(s: str) -> None:
@@ -345,7 +368,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(400, "no valid platforms selected")
         if not job.meta.is_complete():
             raise HTTPException(400, "add a title and caption before publishing")
-        worker.submit(pipeline.publish_job, job, platforms)
+        publisher.submit(pipeline.publish_job, job, platforms)
         return {"ok": True, "platforms": platforms}
 
     @app.post("/api/job/{job_id}/rehearse")
@@ -363,7 +386,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
                      if p in cfg.enabled_platforms]
         if not platforms:
             raise HTTPException(400, "no valid platforms selected")
-        worker.submit(pipeline.publish_job, job, platforms, dry_run=True)
+        publisher.submit(pipeline.publish_job, job, platforms, dry_run=True)
         return {"ok": True, "platforms": platforms, "dry_run": True}
 
     @app.get("/api/rehearsal/{name}")

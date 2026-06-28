@@ -58,17 +58,22 @@ def build_models_router(cfg, pipeline, vault, require_auth) -> APIRouter:
 
     @r.get("/api/models")
     async def models(_: None = Depends(require_auth)):
+        # Both _ollama_models() and available() do blocking Ollama HTTP — run them
+        # off the event loop so a slow Ollama doesn't stall the server.
+        def _probe():
+            return _ollama_models(), pipeline.llm.available()
+        ollama_models, active = await run_in_threadpool(_probe)
         return {
             "provider": cfg.llm_provider,
             "model": cfg.llm_model or (cfg.ollama_model
                                        if cfg.llm_provider == "ollama" else ""),
             "providers": list(PROVIDERS),
-            "ollama_models": _ollama_models(),
+            "ollama_models": ollama_models,
             "cloud_models": CLOUD_MODELS,
             "keys": {p: bool(vault and vault.enabled and vault.has_api_key(p))
                      for p in CLOUD_PROVIDERS},
             "vault_enabled": bool(vault and vault.enabled),
-            "active_available": pipeline.llm.available(),
+            "active_available": active,
         }
 
     @r.post("/api/models/select")

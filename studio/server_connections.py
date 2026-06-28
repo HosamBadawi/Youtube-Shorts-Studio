@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from .config import PLATFORMS
 from .health import platform_health, server_health
@@ -88,7 +89,9 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
     # --- health ------------------------------------------------------------
     @r.get("/api/health")
     async def health(_: None = Depends(require_auth)):
-        return server_health(cfg, store)
+        # server_health does blocking disk/ffmpeg/Ollama probes — keep them off
+        # the event loop.
+        return await run_in_threadpool(server_health, cfg, store)
 
     # --- list / detail -----------------------------------------------------
     @r.get("/api/connections")
