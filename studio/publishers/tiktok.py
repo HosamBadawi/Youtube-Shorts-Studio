@@ -157,14 +157,17 @@ def _set_caption(frame, caption: str, log: list[str]) -> None:
 
 
 def _post_locator(frame):
-    return frame.locator("[data-e2e=post_video_button], button:has-text('Post')")
+    # ONLY the precise data-e2e button. A 'has-text(Post)' match also hits the
+    # "Posts" sidebar nav link, whose click navigates away and pops the
+    # "are you sure you want to exit?" modal instead of publishing.
+    return frame.locator("[data-e2e=post_video_button]")
 
 
 def _click_post(frame) -> bool:
     for getter in (
         lambda: frame.locator("[data-e2e=post_video_button]"),
+        # exact=True so it can't match the "Posts" sidebar item.
         lambda: frame.get_by_role("button", name="Post", exact=True),
-        lambda: frame.locator("button:has-text('Post')"),
     ):
         try:
             btn = getter().first
