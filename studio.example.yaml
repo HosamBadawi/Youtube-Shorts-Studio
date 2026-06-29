@@ -83,6 +83,25 @@ publish_backoff_base: 2.0
 publish_backoff_max: 30.0
 screenshot_on_failure: true   # save a screenshot under workspace/failures/ on a fail
 health_check_timeout: 45.0
+# How long to wait for the video upload to FINISH before reporting success — the
+# final Share/Post starts the real upload, which on a slow line takes minutes.
+# Raise this if your upload is very slow.
+publish_upload_timeout: 1200  # seconds (20 min)
+move_uploaded_on_success: true  # move the short to workspace/uploaded/ when all ok
+
+# Post Facebook Reels to a PAGE (not your personal profile): set the Page URL.
+# Blank = personal profile.
+#   facebook_page_url: "https://www.facebook.com/profile.php?id=<page-id>"
+facebook_page_url: ""
+
+# --- OPTIONAL: official Meta Graph API for IG + Facebook Page --------------
+# Reliable alternative to browser automation (no CAPTCHA, real post id). Free for
+# accounts you OWN (Development Mode — no App Review). The Page access token is
+# stored ENCRYPTED in the vault (via the app), NEVER in this file. See STUDIO_README.
+meta_api_enabled: false
+facebook_page_id: ""          # numeric Page id
+instagram_business_id: ""     # IG Business account id linked to the Page
+meta_graph_version: "v21.0"
 
 # How a logged-in browser is obtained. auto = try the whole chain
 #   saved_session -> edge_profile -> credentials_login

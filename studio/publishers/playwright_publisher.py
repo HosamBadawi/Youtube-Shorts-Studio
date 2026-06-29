@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import random
-import re
 import time
 from pathlib import Path
 
@@ -162,39 +161,6 @@ class PlaywrightPublisher:
                     * (self.cfg.publish_backoff_factor ** (n - 1)),
                     self.cfg.publish_backoff_max)
         time.sleep(random.uniform(delay * 0.5, delay))  # partial jitter
-
-    def _confirm_published(self, page, action_labels, patterns: str,
-                           timeout_ms: int) -> bool:
-        """Language-agnostic publish confirmation. Succeeds on ANY of: success
-        text matching ``patterns``; the action button(s) disappearing (the
-        composer closed); or a navigation away from the composer. This avoids
-        false "failed" verdicts on non-English UIs (which would otherwise trigger
-        a retry that re-posts)."""
-        pat = re.compile(patterns, re.I)
-        start_url = page.url
-        deadline = time.time() + timeout_ms / 1000.0
-        while time.time() < deadline:
-            try:
-                if page.get_by_text(pat).count() > 0:
-                    return True
-            except Exception:
-                pass
-            try:
-                if action_labels and all(
-                        page.get_by_role("button", name=l).count() == 0
-                        for l in action_labels):
-                    return True
-            except Exception:
-                pass
-            try:
-                u = page.url
-                if u != start_url and "create" not in u.lower() \
-                        and "upload" not in u.lower():
-                    return True
-            except Exception:
-                pass
-            page.wait_for_timeout(1000)
-        return False
 
     def dry_stop(self, page, log: list[str]) -> PublishResult:
         """Rehearsal stop: the composer is filled and the final post button is in
