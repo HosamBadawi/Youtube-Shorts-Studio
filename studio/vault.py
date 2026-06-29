@@ -15,7 +15,9 @@ Design (see the publishing-design plan):
   credentials raises a friendly error, and the Edge-profile / saved-session
   publish strategies keep working.
 
-Listing/status never decrypts and never returns secrets.
+Listing/status never returns passwords/tokens/TOTP secrets; it does surface the
+stored *username* (a low-sensitivity handle) so the UI can show which account is
+connected.
 """
 
 from __future__ import annotations

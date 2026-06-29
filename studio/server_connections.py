@@ -1,8 +1,9 @@
 """Connections / Accounts API: manage how each platform logs in + health.
 
 Mounted by :func:`studio.server.create_app`. Every route is gated by the app's
-``require_auth`` dependency. Credentials are **write-only** — status routes never
-return secrets. Long actions (health/login that launch a browser) run on the
+``require_auth`` dependency. Passwords/tokens/TOTP are **write-only** — status
+routes never return them (the stored username is shown so the UI is useful). Long
+actions (health/login that launch a browser) run on the
 shared worker and report through a run-id poll, matching the batches/downloads
 pattern already used elsewhere.
 
