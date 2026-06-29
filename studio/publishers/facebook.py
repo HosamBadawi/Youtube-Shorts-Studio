@@ -10,6 +10,7 @@ manages the target Page.
 from __future__ import annotations
 
 import logging
+import time
 
 from .base import PublishResult
 from .playwright_publisher import PlaywrightPublisher, code_for as _code_for
@@ -76,20 +77,15 @@ class FacebookPublisher(PlaywrightPublisher):
         page.wait_for_timeout(3000)
         if self.dry_run:
             return self.dry_stop(page, log)
-        # Make sure the upload is fully done before the final Post.
-        self.wait_uploaded(
-            lambda: page.get_by_role("button", name="Post", exact=True),
-            log, "facebook post")
-        log.append("posting")
-        if not _click_text(page, ["Post", "Publish", "Share now"]):
-            return PublishResult.failure(self.name, "no Post button", log=log)
-        if self._confirm_published(
-                page, ["Post", "Publish", "Share now"],
-                r"your reel|reel shared|published|posted|shared|تم|نشر", 60000):
+        # FB keeps Post inert until the (slow) upload to its servers finishes, so
+        # click it and wait for the composer to actually submit (navigate away),
+        # re-clicking until it takes. Returning early aborts the upload.
+        log.append("posting (waiting for the upload to finish)")
+        if _wait_posted(page, self.cfg.publish_upload_timeout, log):
             log.append("confirmed published")
             return PublishResult.success(self.name, url=self.home_url, log=log)
-        return PublishResult.failure(self.name,
-                                     "no publish confirmation seen", log=log)
+        return PublishResult.failure(
+            self.name, "the reel did not submit in time", log=log)
 
     def login_steps(self, page, creds, get_code=None) -> None:
         page.goto("https://www.facebook.com/login", wait_until="domcontentloaded")
@@ -132,6 +128,32 @@ def _wait_click(page, labels, tries: int = 6, gap: int = 1500) -> bool:
         if _click_text(page, labels, timeout=3000):
             return True
         page.wait_for_timeout(gap)
+    return False
+
+
+def _wait_posted(page, timeout_s: float, log: list[str]) -> bool:
+    """Click Post and wait until the composer is actually left (= submitted). FB
+    keeps the button inert while the slow upload runs, so re-click until it takes,
+    or until a success toast appears. Generous timeout for slow upload speeds."""
+    deadline = time.time() + max(120.0, float(timeout_s))
+    while time.time() < deadline:
+        _click_text(page, ["Post", "Publish", "Share now"], timeout=6000)
+        page.wait_for_timeout(10000)
+        try:
+            u = page.url
+        except Exception:
+            return True                        # FB navigated/closed the context
+        if "/reel/" not in u and "/reels/create" not in u:
+            log.append("left composer — submitted")
+            page.wait_for_timeout(5000)        # settle before closing
+            return True
+        for t in ("your reel", "has been shared", "Reel shared", "published"):
+            try:
+                if page.get_by_text(t, exact=False).count() > 0:
+                    log.append("posted toast seen")
+                    return True
+            except Exception:
+                pass
     return False
 
 

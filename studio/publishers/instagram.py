@@ -10,6 +10,7 @@ then WAIT for the shared confirmation before reporting success) and an opt-in
 from __future__ import annotations
 
 import logging
+import time
 
 from .base import PublishResult
 from .playwright_publisher import PlaywrightPublisher, code_for as _code_for
@@ -67,13 +68,14 @@ class InstagramPublisher(PlaywrightPublisher):
         log.append("sharing")
         if not _click_text(page, ["Share"]):
             return PublishResult.failure(self.name, "no Share button", log=log)
-        if self._confirm_published(page, ["Share"],
-                                   r"shared|has been shared|your reel|posted|"
-                                   r"تم|نشر", 45000):
+        # Clicking Share starts the REAL upload ("Sharing…") — on a slow line that
+        # runs for minutes. Wait for it to FINISH (returning early closes the
+        # browser and aborts the post — the false-"success" we hit before).
+        if _wait_sharing_done(page, self.cfg.publish_upload_timeout, log):
             log.append("confirmed shared")
             return PublishResult.success(self.name, url=self.home_url, log=log)
-        return PublishResult.failure(self.name,
-                                     "no share confirmation seen", log=log)
+        return PublishResult.failure(
+            self.name, "the reel did not finish sharing in time", log=log)
 
     def login_steps(self, page, creds, get_code=None) -> None:
         page.goto("https://www.instagram.com/accounts/login/",
@@ -170,3 +172,31 @@ def _content(page) -> str:
         return (page.content() or "").lower()
     except Exception:
         return ""
+
+
+def _sharing(page) -> bool:
+    """True while Instagram is still uploading/finalizing the reel."""
+    for t in ("Sharing", "Posting"):
+        try:
+            if page.get_by_text(t, exact=False).count() > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _wait_sharing_done(page, timeout_s: float, log: list[str]) -> bool:
+    """Wait for the post-Share upload to complete: the 'Sharing…' indicator
+    appears, then disappears. Generous timeout for slow upload speeds."""
+    for _ in range(20):                        # let 'Sharing…' appear (~30s)
+        if _sharing(page):
+            break
+        page.wait_for_timeout(1500)
+    deadline = time.time() + max(60.0, float(timeout_s))
+    while time.time() < deadline:
+        page.wait_for_timeout(5000)
+        if not _sharing(page):
+            log.append("sharing finished")
+            page.wait_for_timeout(4000)        # settle before closing
+            return True
+    return False

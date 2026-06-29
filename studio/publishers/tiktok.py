@@ -9,6 +9,7 @@ are the Edge profile or a saved session captured on the host.
 from __future__ import annotations
 
 import logging
+import time
 
 from .base import PublishResult
 from .playwright_publisher import PlaywrightPublisher, code_for as _code_for
@@ -86,15 +87,22 @@ class TikTokPublisher(PlaywrightPublisher):
         log.append("waiting for upload to finish")
         self.wait_uploaded(lambda: _post_locator(frame), log, "tiktok upload")
         _dismiss_popups(frame)                       # popups can also appear late
+        if _captcha(frame):
+            return PublishResult.failure(
+                self.name, "TikTok slider CAPTCHA — solve it in the browser, then "
+                "retry", needs_login=True, log=log)
         log.append("clicking Post")
         if not _click_post(frame):
             return PublishResult.failure(self.name, "no Post button", log=log)
-        # TikTok shows a "Manage your posts" / success modal when done.
-        if self._confirm_published(page, ["Post"],
-                                   r"uploaded|posted|view profile|"
-                                   r"manage your posts|تم", 50000):
+        # Real success: TikTok shows '✓ Video published' and navigates to
+        # /tiktokstudio/content — wait for THAT, not just a closed composer.
+        if _wait_published(page, frame, self.cfg.publish_upload_timeout, log):
             log.append("confirmed posted")
             return PublishResult.success(self.name, url=self.home_url, log=log)
+        if _captcha(frame):
+            return PublishResult.failure(
+                self.name, "TikTok slider CAPTCHA blocked the post — solve it and "
+                "retry", needs_login=True, log=log)
         return PublishResult.failure(self.name, "no post confirmation seen", log=log)
 
 
@@ -124,6 +132,43 @@ def _wait_for(frame, sels, tries: int = 40, gap: int = 1500) -> bool:
             except Exception:
                 pass
         frame.wait_for_timeout(gap)
+    return False
+
+
+def _captcha(frame) -> bool:
+    """True if TikTok's slider/puzzle CAPTCHA is up (a human must solve it)."""
+    for t in ("Drag the slider", "slider", "puzzle", "Verify to continue"):
+        try:
+            if frame.get_by_text(t, exact=False).count() > 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _wait_published(page, frame, timeout_s: float, log: list[str]) -> bool:
+    """Wait for TikTok's REAL confirmation: navigation to /tiktokstudio/content,
+    or a 'Video published' toast. Bails out (False) if a CAPTCHA appears so the
+    caller can surface it instead of reporting a false success."""
+    deadline = time.time() + max(60.0, float(timeout_s))
+    while time.time() < deadline:
+        page.wait_for_timeout(5000)
+        try:
+            u = page.url.lower()
+            if "content" in u and "upload" not in u:
+                log.append("navigated to posts")
+                return True
+        except Exception:
+            pass
+        for t in ("Video published", "being uploaded", "Manage your posts"):
+            try:
+                if frame.get_by_text(t, exact=False).count() > 0:
+                    log.append(f"success: {t}")
+                    return True
+            except Exception:
+                pass
+        if _captcha(frame):
+            return False
     return False
 
 
