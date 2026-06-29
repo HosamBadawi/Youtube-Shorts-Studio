@@ -152,8 +152,10 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
         def task():
             try:
                 runs[rid]["result"] = fn()
-            except Exception as exc:  # pragma: no cover
-                runs[rid]["error"] = f"{type(exc).__name__}: {exc}"
+            except Exception:  # pragma: no cover
+                import logging
+                logging.getLogger(__name__).exception("connection task failed")
+                runs[rid]["error"] = "the action failed (see server logs)"
             finally:
                 runs[rid]["done"] = True
                 runs[rid]["stage"] = "done"
@@ -212,8 +214,10 @@ def build_connections_router(cfg, store, pipeline, vault, runner, runs,
             try:
                 runs[rid]["result"] = interactive_login(
                     cfg, vault, platform, runs[rid], cq)
-            except Exception as exc:  # pragma: no cover
-                runs[rid]["error"] = f"{type(exc).__name__}: {exc}"
+            except Exception:  # pragma: no cover
+                import logging
+                logging.getLogger(__name__).exception("connection task failed")
+                runs[rid]["error"] = "the action failed (see server logs)"
             finally:
                 runs[rid]["done"] = True
                 runs[rid]["stage"] = "done"

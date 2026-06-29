@@ -89,6 +89,11 @@ class StudioConfig:
 
     # --- downloading source videos from a URL (yt-dlp) ----------------------
     download_prefer_mp4: bool = True
+    # SSRF guard: only these hosts (+ subdomains) may be downloaded from. Empty =
+    # any PUBLIC host (still blocks private/loopback/link-local/CGNAT). Keep it
+    # tight since the URL is an authenticated-but-powerful input.
+    download_host_allowlist: list[str] = field(
+        default_factory=lambda: ["youtube.com", "youtu.be"])
 
     # Reframing technique. "auto" = let the engine classify per clip; or force
     # one for every short: crop_blur | blur_background | face_focus |

@@ -22,6 +22,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--no-tunnel", action="store_true",
                         help="Don't start the Cloudflare tunnel.")
+    parser.add_argument("--allow-insecure", action="store_true",
+                        help="Allow network exposure with no/default password "
+                             "(NOT recommended).")
     parser.add_argument("-v", "--verbose", action="count", default=1)
     args = parser.parse_args(argv)
 
@@ -54,9 +57,21 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 1
 
-    if cfg.app_password == "change-me":
-        print("\n⚠️  app_password is still 'change-me'. Set a real password in "
-              "studio.yaml before exposing this publicly!\n")
+    # Fail closed: never put an unprotected admin UI on a public/LAN address.
+    weak_auth = (not cfg.app_password) or cfg.app_password == "change-me"
+    loopback = {"127.0.0.1", "localhost", "::1"}
+    public = cfg.cloudflare_mode != "off" or cfg.host not in loopback
+    if weak_auth and public and not args.allow_insecure:
+        why = ("no app_password is set" if not cfg.app_password
+               else "app_password is still the default 'change-me'")
+        print(f"\n⛔ Refusing to expose the app: {why}.\n"
+              f"   That would put an unprotected admin UI on a public URL.\n"
+              f"   Fix one of:\n"
+              f"     • set a strong app_password in studio.yaml (recommended), or\n"
+              f"     • run locally:  python -m studio --no-tunnel --host 127.0.0.1, or\n"
+              f"     • override (NOT recommended):  --allow-insecure\n",
+              file=sys.stderr)
+        return 2
 
     tunnel = start_tunnel(cfg)
     print(f"Local:  http://localhost:{cfg.port}")

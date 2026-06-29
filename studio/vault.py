@@ -38,7 +38,7 @@ from .config import StudioConfig
 logger = logging.getLogger(__name__)
 
 _DPAPI_ENTROPY = b"daily-shorts-studio-vault-v1"
-_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 15, 8, 1
+_SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 17, 8, 1  # ~128 MB, stronger off-box wrap
 
 
 class Secret(str):
@@ -99,7 +99,7 @@ class CredentialVault:
         """A scrypt recovery wrap is only worth writing if the password is real;
         a default/empty password would make a stolen secrets/ dir crackable."""
         pw = self._recovery_password()
-        return bool(pw) and pw != "change-me"
+        return bool(pw) and pw != "change-me" and len(pw) >= 8
 
     def _scrypt_key(self, password: str, salt: bytes) -> bytes:
         from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
@@ -134,9 +134,13 @@ class CredentialVault:
         if self._has_strong_recovery():
             self._write_scrypt_wrap(dek, self._recovery_password())
         elif not dpapi.available():
-            logger.warning("vault: weak/default recovery password — credential "
-                           "encryption at rest is only as strong as it")
-            self._write_scrypt_wrap(dek, self._recovery_password() or "studio")
+            # No OS keystore (DPAPI) AND no strong recovery password: refuse to
+            # persist a weak, offline-crackable wrap. The vault stays disabled
+            # (credentials must be re-entered each run) until a strong
+            # vault_recovery_password is set. On Windows, DPAPI covers this.
+            raise RuntimeError(
+                "vault needs DPAPI (Windows) or a strong vault_recovery_password "
+                "(>=8 chars) — refusing weak at-rest encryption")
         return dek
 
     def _sync_scrypt(self, dek: bytes) -> None:

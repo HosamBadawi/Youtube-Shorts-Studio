@@ -26,24 +26,33 @@ def is_url(s: str) -> bool:
     return s.startswith("http://") or s.startswith("https://")
 
 
-def assert_safe_url(url: str) -> None:
-    """Reject non-http(s) schemes (e.g. file://) and private/internal addresses
-    so an authenticated request can't turn the downloader into an SSRF / local
-    file-read primitive."""
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")  # carrier-grade NAT / Tailscale
+
+
+def assert_safe_url(url: str, allowlist: list[str] | None = None) -> None:
+    """Reject non-http(s) schemes (e.g. file://), hosts outside ``allowlist`` and
+    private/internal addresses so an authenticated request can't turn the
+    downloader into an SSRF / local file-read primitive."""
     u = urllib.parse.urlparse(url.strip())
     if u.scheme not in ("http", "https"):
         raise ValueError("only http/https URLs are allowed")
-    host = u.hostname
+    host = (u.hostname or "").lower()
     if not host:
         raise ValueError("invalid URL host")
+    allow = [x.lower().strip() for x in (allowlist or []) if x and x.strip()]
+    if allow and not any(host == d or host.endswith("." + d) for d in allow):
+        raise ValueError(f"host not in the download allow-list: {host}")
     try:
         infos = socket.getaddrinfo(host, None)
     except Exception as exc:
         raise ValueError(f"cannot resolve host: {host}") from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
+        if getattr(ip, "ipv4_mapped", None):     # ::ffff:10.0.0.1 -> 10.0.0.1
+            ip = ip.ipv4_mapped
         if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+                or ip in _CGNAT):
             raise ValueError("URL resolves to a private/internal address")
 
 
@@ -69,12 +78,13 @@ def _progress_hook(d: dict) -> None:
 
 def download(url: str, save_dir: str, prefer_mp4: bool = True,
              aria2_connections: int = 16, quiet: bool = True,
-             name: str | None = None, on_progress=None) -> str:
+             name: str | None = None, on_progress=None,
+             allowlist: list[str] | None = None) -> str:
     """Download ``url`` into ``save_dir`` and return the final file path.
 
     If ``name`` is given (e.g. "1"), the file is saved as ``<name>.<ext>``;
     otherwise yt-dlp's title-based name is used."""
-    assert_safe_url(url)
+    assert_safe_url(url, allowlist)
     try:
         from yt_dlp import YoutubeDL  # type: ignore
     except Exception as exc:  # pragma: no cover

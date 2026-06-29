@@ -38,7 +38,7 @@ phone ──https──> Cloudflare tunnel ──> FastAPI (studio/) ──> ada
 ## 2. Install
 
 ```powershell
-cd E:\Hosam_Mahmoud\Social_Media\files
+cd daily-shorts-studio   # the folder you cloned into
 python -m venv .venv ; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r requirements-studio.txt
 python -m playwright install chromium

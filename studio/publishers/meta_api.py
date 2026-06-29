@@ -50,15 +50,22 @@ class _MetaBase:
         return ""
 
     def _get(self, path: str, params: dict, timeout: float = 30.0) -> dict:
+        # Token in the Authorization header, never the query string (URLs land in
+        # access/proxy logs).
+        token = params.pop("access_token", "")
         q = urllib.parse.urlencode(params)
-        url = f"{GRAPH}/{self.ver}/{path}?{q}"
-        with urllib.request.urlopen(url, timeout=timeout) as r:
+        url = f"{GRAPH}/{self.ver}/{path}" + (f"?{q}" if q else "")
+        headers = {"Authorization": f"OAuth {token}"} if token else {}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 
     def _post(self, path: str, params: dict, timeout: float = 60.0) -> dict:
+        token = params.pop("access_token", "")
         url = f"{GRAPH}/{self.ver}/{path}"
         data = urllib.parse.urlencode(params).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST")
+        headers = {"Authorization": f"OAuth {token}"} if token else {}
+        req = urllib.request.Request(url, data=data, method="POST", headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
 

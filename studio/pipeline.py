@@ -235,7 +235,8 @@ class StudioPipeline:
             idx = next_index(self.cfg.library_path)  # 1.mp4, 2.mp4, …
             source = download(source, str(self.cfg.library_path),
                               prefer_mp4=self.cfg.download_prefer_mp4,
-                              name=str(idx))
+                              name=str(idx),
+                              allowlist=self.cfg.download_host_allowlist)
         stage("probing")
         duration = _probe_duration(source)
 
@@ -392,6 +393,10 @@ def _enforce_bounds(span: tuple[float, float], min_s: float, max_s: float,
 
 def _probe_duration(path: str) -> float:
     try:
+        # A local path is made absolute so it can never be read as an ffprobe
+        # option (defense-in-depth for arg injection); URLs pass through.
+        if "://" not in path:
+            path = os.path.abspath(path)
         cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
                "-show_format", path]
         out = subprocess.run(cmd, capture_output=True, text=True, check=True)
