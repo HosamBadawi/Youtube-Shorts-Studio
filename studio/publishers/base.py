@@ -1,4 +1,4 @@
-"""Publisher interface shared by every platform."""
+"""Publisher interface + result value object."""
 
 from __future__ import annotations
 
@@ -13,10 +13,12 @@ from ..metadata import VideoMeta
 class PublishResult:
     platform: str
     ok: bool
-    url: str = ""          # link to the published post (or a rehearsal screenshot)
+    url: str = ""          # link to the published video
+    video_id: str = ""     # YouTube video id (when ok)
     error: str = ""        # human-readable failure reason
-    needs_login: bool = False  # True -> run `python -m studio.login_setup <p>`
-    dry_run: bool = False  # True -> rehearsal: reached the post step, posted nothing
+    needs_login: bool = False  # True -> run `python -m studio.login_setup`
+    dry_run: bool = False  # True -> auth verified, nothing uploaded
+    thumb: str = ""        # thumbnails.set outcome: ok | <reason> | ""
     log: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -24,22 +26,24 @@ class PublishResult:
             "platform": self.platform,
             "ok": self.ok,
             "url": self.url,
+            "video_id": self.video_id,
             "error": self.error,
             "needs_login": self.needs_login,
             "dry_run": self.dry_run,
+            "thumb": self.thumb,
             "log": self.log,
         }
 
     @classmethod
-    def success(cls, platform: str, url: str = "", log=None) -> "PublishResult":
-        return cls(platform, True, url=url, log=list(log or []))
+    def success(cls, platform: str, url: str = "", video_id: str = "",
+                thumb: str = "", log=None) -> "PublishResult":
+        return cls(platform, True, url=url, video_id=video_id, thumb=thumb,
+                   log=list(log or []))
 
     @classmethod
-    def rehearsed(cls, platform: str, shot_url: str = "", log=None
-                  ) -> "PublishResult":
-        """A dry run that reached the final post step without posting."""
-        return cls(platform, True, url=shot_url, dry_run=True,
-                   log=list(log or []))
+    def rehearsed(cls, platform: str, log=None) -> "PublishResult":
+        """A dry run that verified auth without uploading."""
+        return cls(platform, True, dry_run=True, log=list(log or []))
 
     @classmethod
     def failure(cls, platform: str, error: str, *, needs_login: bool = False,
@@ -49,12 +53,13 @@ class PublishResult:
 
 
 class Publisher(Protocol):
-    """A platform publisher. ``publish`` must never raise - return a
-    :class:`PublishResult` describing success or failure instead, so one bad
-    platform never aborts the others."""
+    """``publish`` must never raise - return a :class:`PublishResult`
+    describing success or failure instead."""
 
     name: str
 
     def __init__(self, cfg: StudioConfig) -> None: ...
 
-    def publish(self, video_path: str, meta: VideoMeta) -> PublishResult: ...
+    def publish(self, video_path: str, meta: VideoMeta,
+                privacy: str | None = None,
+                thumb_path: str | None = None) -> PublishResult: ...

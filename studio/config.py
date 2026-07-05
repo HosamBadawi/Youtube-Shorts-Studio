@@ -1,4 +1,4 @@
-"""Runtime configuration for Daily Shorts Studio.
+"""Runtime configuration for YouTube Shorts Studio.
 
 Everything has a sane default so the app boots with zero config; a ``studio.yaml``
 (or env vars) only overrides what you care about. Loading is dependency-light:
@@ -16,13 +16,11 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-PLATFORMS = ("youtube", "instagram", "tiktok", "facebook")
-
 
 @dataclass
 class StudioConfig:
     # --- where everything lives ---------------------------------------------
-    workspace: str = "./workspace"          # uploads, renders, sessions, db
+    workspace: str = "./workspace"          # uploads, renders, db
     host: str = "0.0.0.0"
     port: int = 8765
 
@@ -47,21 +45,22 @@ class StudioConfig:
 
     # --- local AI (Ollama, hosted on this PC) -------------------------------
     ollama_url: str = "http://localhost:11434"
-    # "auto" = let Python query Ollama and pick the most capable installed model.
-    # Or pin a specific one, e.g. "llama3.1" / "qwen2.5:14b".
+    # "auto" = pick the most capable installed model THAT FITS the GPU (a 35B
+    # spills to system RAM on an 8 GB card and crawls). Or pin one, e.g.
+    # "llama3.1" / "qwen2.5:7b".
     ollama_model: str = "auto"
     ollama_enabled: bool = True
     # Leave False for thinking models (qwen3, deepseek-r1): they otherwise return
     # empty output. Set True only if you deliberately want chain-of-thought.
     ollama_think: bool = False
-    # Seconds to wait for an Ollama response. Big models (e.g. 35B) on a small
-    # GPU spill to CPU and need more; bump this if segment/caption picks fail.
+    # Seconds to wait for an Ollama response. Big models on a small GPU spill to
+    # CPU and need more; bump this if segment/caption picks fail.
     ollama_timeout: float = 240.0
-    # Language for the post text (title/caption/hashtags). "auto" = match the
+    # Language for the post text (title/description). "auto" = match the
     # video's spoken language; or force e.g. "Arabic" / "English".
     metadata_language: str = "auto"
 
-    # --- which AI writes captions / picks segments --------------------------
+    # --- which AI writes copy / picks segments ------------------------------
     # ollama (local) | openai | anthropic | gemini. Chosen from the web UI;
     # cloud API keys are stored ENCRYPTED in the vault, never in this file.
     llm_provider: str = "ollama"
@@ -90,8 +89,47 @@ class StudioConfig:
     # ...or this fraction of the runtime, whichever is LARGER (so a 90-min video
     # skips minutes of intro, not just 45s). Always leaves room for a full clip.
     intro_skip_frac: float = 0.05
-    # Default number of distinct shorts to cut from one long video (studio.shorts).
+    # Default number of distinct shorts to cut from one long video. This is a
+    # MAXIMUM: if the AI finds fewer genuinely strong self-contained segments,
+    # you get fewer (with the reason shown) instead of padded random cuts.
     shorts_per_video: int = 3
+
+    # --- semantic segmentation (the map->validate->reduce selector) ---------
+    # Ask SponsorBlock (crowdsourced, privacy-preserving lookup) which parts of
+    # a YouTube video are sponsor/intro/outro segments and never cut from them.
+    sponsorblock_enabled: bool = True
+    # Sentences per LLM window and overlap between windows. Small local models
+    # degrade on long inputs — keep windows in the ~3-5 minute range.
+    segment_window_sentences: int = 32
+    segment_overlap_sentences: int = 8
+
+    # --- montage: cut silences so shorts feel fast and addictive ------------
+    silence_cut_enabled: bool = True
+    # A gap between spoken words longer than this (seconds) is removed...
+    silence_min_gap: float = 0.45
+    # ...keeping this much padding around the speech on each side.
+    silence_pad: float = 0.12
+    # Alternate a subtle punch-in zoom between jump cuts (classic montage feel).
+    montage_zoom: bool = True
+    montage_zoom_factor: float = 1.06
+
+    # --- subscribe reminder overlay (burned into every short) ---------------
+    subscribe_overlay_enabled: bool = True
+    # When the animation appears, as a fraction of the short's duration.
+    subscribe_at_frac: float = 0.4
+    subscribe_duration: float = 3.0         # seconds on screen
+    subscribe_sound: bool = True            # soft bell "ding" with the popup
+    subscribe_text: str = "اشترك"           # button label before the click
+    subscribed_text: str = "تم الاشتراك"     # button label after the click
+
+    # --- AI thumbnails -------------------------------------------------------
+    thumbs_enabled: bool = True
+    # auto = pick per short; or force one: blur (blurred video frame),
+    # burst (radial rays), flat (brand color + vignette).
+    thumb_template: str = "auto"
+    # Run the background-removal model on the GPU. Default False: CPU keeps the
+    # whole 8 GB free for Ollama/Whisper and one thumbnail only takes seconds.
+    thumb_use_gpu: bool = False
 
     # --- downloading source videos from a URL (yt-dlp) ----------------------
     download_prefer_mp4: bool = True
@@ -106,7 +144,7 @@ class StudioConfig:
     # active_speaker | smart_crop | mirror_background | dynamic_canvas | no_crop.
     reframe_mode: str = "auto"
 
-    # --- burned-in TikTok-style captions ------------------------------------
+    # --- burned-in karaoke captions ------------------------------------------
     captions_enabled: bool = True
     caption_font: str = "Arial"
     caption_fontsize: int = 96
@@ -115,81 +153,30 @@ class StudioConfig:
     caption_position: str = "lower"      # lower | center | bottom
     caption_max_words: int = 4           # words on screen at once
 
-    # --- publishing ---------------------------------------------------------
-    enabled_platforms: list[str] = field(default_factory=lambda: list(PLATFORMS))
-    one_per_day: bool = False               # block a 2nd publish on the same day
-    playwright_headless: bool = True        # set False to watch automation run
-
-    # Post Facebook Reels to a PAGE instead of your personal profile. Set this to
-    # the Page URL (e.g. https://www.facebook.com/profile.php?id=...) and the
-    # publisher starts the Reel from the Page so it's posted as the Page. Blank =
-    # post to your personal profile.
-    facebook_page_url: str = ""
-
-    # --- official Meta (Graph) API for Instagram + Facebook Page ------------
-    # When enabled, IG + FB Page post via the official API (reliable, resumable,
-    # returns a real post id) instead of browser automation. The Page access
-    # token is stored ENCRYPTED in the vault, never here. Free for your OWN
-    # accounts (Development Mode — no App Review).
-    meta_api_enabled: bool = False
-    # The IG Content Publishing API rejects reels over ~90s (verified empirically:
-    # 85s FINISHED, 172s ERROR 2207077 — the app allows 3 min, the API does not).
-    # Longer reels automatically fall back to the browser publisher.
-    instagram_api_max_seconds: float = 90.0
-    facebook_page_id: str = ""          # numeric Page id (graph: /me/accounts)
-    instagram_business_id: str = ""     # IG Business Account id linked to the Page
-    meta_graph_version: str = "v21.0"
+    # --- uploading to YouTube -------------------------------------------------
+    # Since June 2026 the free Data API quota allows ~100 uploads/day, so the
+    # old one-per-day guard is off by default. Turn it on to pace yourself.
+    one_per_day: bool = False
+    move_uploaded_on_success: bool = True   # move the short to uploaded/ when done
+    # Bake the generated thumbnail in as the first ~0.1s of the video. This is
+    # the only Shorts-thumbnail mechanism that works on every account (the API
+    # thumbnail is also attempted, but Shorts support for it is rollout-gated).
+    embed_thumb_first_frame: bool = True
 
     # Folder the web app browses for local source videos ("" = use download_dir).
     media_library: str = ""
 
-    # --- publish reliability (browser-automation platforms) -----------------
-    publish_max_attempts: int = 3           # retries per platform per publish
-    publish_backoff_base: float = 2.0       # seconds; exponential w/ full jitter
-    publish_backoff_factor: float = 2.0
-    publish_backoff_max: float = 30.0
-    screenshot_on_failure: bool = True      # save a screenshot on a failed try
-    health_check_timeout: float = 45.0      # per-platform health/login budget (s)
-    # How long to wait for the video upload to FINISH before clicking the final
-    # Post/Share button (platforms disable it mid-upload). Raise for slow upload
-    # speeds — a long short on a slow line can take many minutes.
-    publish_upload_timeout: float = 1200.0  # seconds (20 min)
-    move_uploaded_on_success: bool = True   # move the short to uploaded/ when done
-
-    # --- session strategy (how a logged-in browser is obtained) -------------
-    # auto = try the whole chain [edge_profile -> saved_session ->
-    # credentials_login]; or pin one. Per-platform overrides win.
-    session_strategy: str = "auto"
-    session_strategy_overrides: dict = field(default_factory=dict)
-
-    # Reuse the logins saved in your Microsoft Edge profile. Empty disables it.
-    # Point at the Edge "User Data" dir, e.g.
-    #   C:/Users/<you>/AppData/Local/Microsoft/Edge/User Data
-    edge_user_data_dir: str = ""
-    edge_profile_dir: str = "Default"       # which profile (see edge://version)
-    # Private working dir the profile is COPIED into (default = safe copy mode).
-    edge_automation_dir: str = ""           # "" -> secrets/edge_profile
-    # Use the LIVE Edge profile directly (your exact cookies/extensions) instead
-    # of a copy. Requires Edge to be CLOSED while automation runs.
-    edge_use_live_profile: bool = False
-    # If Edge is open when automation needs the profile, close it automatically
-    # (so a remote publish isn't blocked by a profile lock).
-    edge_close_if_running: bool = False
-    # After an interactive health/connect check that closed Edge, reopen it so
-    # your everyday browser comes back. (Not done after a publish, to avoid the
-    # browser flapping open/closed between platforms.)
-    edge_reopen_after: bool = False
-
-    # --- credential vault (encrypted at rest) -------------------------------
+    # --- credential vault (encrypted at rest, stores cloud LLM API keys) ----
     vault_db: str = "./secrets/vault.db"
     # Password used to scrypt-wrap the vault key for portable recovery. Empty ->
     # use app_password. (DPAPI is the no-prompt primary unwrap on Windows.)
     vault_recovery_password: str = ""
 
-    # YouTube Data API (the only platform using an official API).
+    # --- YouTube Data API (the official, free upload path) -------------------
     youtube_client_secret: str = "./secrets/youtube_client_secret.json"
     youtube_token: str = "./secrets/youtube_token.json"
-    youtube_privacy: str = "public"         # public|unlisted|private
+    youtube_privacy: str = "public"         # public|unlisted|private (default;
+    #                                         overridable per short in the UI)
     youtube_category_id: str = "22"         # 22 = People & Blogs
 
     # ------------------------------------------------------------------------
@@ -224,22 +211,17 @@ class StudioConfig:
         return self.workspace_path / "rendered"
 
     @property
-    def sessions_dir(self) -> Path:
-        return self.workspace_path / "sessions"  # Playwright per-platform logins
+    def thumbs_dir(self) -> Path:
+        return self.workspace_path / "thumbs"
+
+    @property
+    def assets_dir(self) -> Path:
+        """Generated runtime assets (subscribe-overlay frames, bell sound)."""
+        return self.workspace_path / "assets"
 
     @property
     def db_path(self) -> Path:
         return self.workspace_path / "studio.db"
-
-    @property
-    def failures_dir(self) -> Path:
-        # Failure screenshots. NOT under web/static — never web-served.
-        return self.workspace_path / "failures"
-
-    @property
-    def rehearsals_dir(self) -> Path:
-        # Dry-run composer screenshots, served (auth-gated) via /api/rehearsal.
-        return self.workspace_path / "rehearsals"
 
     @property
     def secrets_dir(self) -> Path:
@@ -249,26 +231,10 @@ class StudioConfig:
     def vault_path(self) -> Path:
         return Path(self.vault_db).expanduser().resolve()
 
-    @property
-    def edge_automation_path(self) -> Path:
-        # Default under the locked-down secrets/ dir: the copy holds live auth
-        # cookies + the cookie master key, so it must be ACL-restricted + ignored.
-        if self.edge_automation_dir:
-            return Path(self.edge_automation_dir).expanduser()
-        return self.secrets_dir / "edge_profile"
-
-    def session_strategy_for(self, platform: str) -> str:
-        ov = self.session_strategy_overrides or {}
-        return str(ov.get(platform, self.session_strategy) or "auto")
-
-    def session_dir_for(self, platform: str) -> Path:
-        return self.sessions_dir / platform
-
     def ensure_dirs(self) -> None:
-        for p in (self.incoming_dir, self.rendered_dir, self.sessions_dir,
-                  self.download_dir, self.shorts_dir, self.uploaded_dir,
-                  self.library_path, self.failures_dir, self.rehearsals_dir,
-                  self.secrets_dir):
+        for p in (self.incoming_dir, self.rendered_dir, self.download_dir,
+                  self.shorts_dir, self.uploaded_dir, self.library_path,
+                  self.thumbs_dir, self.assets_dir, self.secrets_dir):
             p.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
@@ -284,9 +250,8 @@ class StudioConfig:
                               "scene_aware"}, "auto"),
             "caption_position": ({"lower", "center", "bottom"}, "lower"),
             "whisper_device": ({"auto", "cpu", "cuda"}, "auto"),
-            "session_strategy": ({"auto", "edge_profile", "saved_session",
-                                  "credentials_login"}, "auto"),
             "youtube_privacy": ({"public", "unlisted", "private"}, "private"),
+            "thumb_template": ({"auto", "blur", "burst", "flat"}, "auto"),
         }
         log = logging.getLogger(__name__)
         for name, (allowed, safe) in enums.items():
@@ -316,7 +281,7 @@ class StudioConfig:
             if env_key in os.environ:
                 cur = getattr(cfg, f.name)
                 if isinstance(cur, dict):
-                    continue  # dicts (e.g. strategy overrides) come from YAML only
+                    continue  # dicts come from YAML only
                 setattr(cfg, f.name, _coerce(os.environ[env_key], cur))
         cfg.validate()
         return cfg

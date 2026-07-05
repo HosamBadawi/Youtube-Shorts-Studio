@@ -1,10 +1,11 @@
 "use strict";
-// Shorts Studio - mobile/desktop front-end. Plain JS, no build step.
+// YouTube Shorts Studio — mobile/desktop front-end. Plain JS, no build step.
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const api = async (path, opts = {}) => {
   const res = await fetch(path, { credentials: "same-origin", ...opts });
+  if (res.status === 401) { showLogin(); throw new Error("not authenticated"); }
   if (!res.ok) {
     let d = res.statusText;
     try { d = (await res.json()).detail || d; } catch (e) {}
@@ -12,584 +13,635 @@ const api = async (path, opts = {}) => {
   }
   return res.status === 204 ? null : res.json();
 };
+const jpost = (path, body) => api(path, {
+  method: "POST", headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body || {}),
+});
 const esc = (s) => String(s || "").replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const icon = (p) => ({ youtube: "▶️", instagram: "📸", tiktok: "🎵", facebook: "👍" }[p] || "•");
 
-let STATE = { platforms: [], src: "local", batchId: null, batchPoll: null, dlPoll: null, cards: {} };
+const STATE = {
+  status: {}, src: "url", cards: {}, jobPolls: {}, batchPolls: {},
+  dlPoll: null, uploadQueue: [], models: null,
+};
 
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden");
-  clearTimeout(t._t); t._t = setTimeout(() => t.classList.add("hidden"), 2200);
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.add("hidden"), 2400);
 }
 
-// ---------- navigation ----------
-function go(screen) {
-  $$(".screen").forEach((s) => s.classList.toggle("hidden", s.dataset.screen !== screen));
-  $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.go === screen));
-  if (screen === "download") loadVideos();
-  if (screen === "shorts") loadShorts();
-  if (screen === "create") loadLocalOptions();
-  if (screen === "connections") { loadHealth(); loadModels(); loadConnections(); }
+// ---------- tabs ----------
+function go(tab) {
+  $$(".screen").forEach((s) => s.classList.toggle("hidden", s.dataset.screen !== tab));
+  $$(".tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  if (tab === "create") { loadLibrary(); loadActiveBatches(); }
+  if (tab === "shorts") loadShorts();
+  if (tab === "settings") { loadModels(); loadYouTube(); loadHealth(); }
 }
-$$(".tab").forEach((t) => (t.onclick = () => go(t.dataset.go)));
+$$(".tabbar button").forEach((b) => (b.onclick = () => go(b.dataset.tab)));
 
-// ---------- boot ----------
+// ---------- boot / auth ----------
+function showLogin() { $("#login").classList.remove("hidden"); }
+
 async function boot() {
   let s;
   try { s = await api("/api/status"); } catch (e) { showLogin(); return; }
-  STATE.platforms = s.platforms;
   if (s.needs_password && !s.authed) { showLogin(); return; }
   $("#login").classList.add("hidden");
-  $("#app").classList.remove("hidden");
-  $("#statuschip").innerHTML = s.ollama
-    ? `<span class="on">●</span> ${esc(s.ollama_model)} · ${esc(s.reframe_mode)}`
-    : `<span class="off">●</span> Ollama offline`;
-  $("#count").value = s.default_count || 3;
-  if (s.length_min) $("#lenMin").value = Math.round(s.length_min);
-  if (s.length_max) $("#lenMax").value = Math.round(s.length_max);
-  STATE.vaultEnabled = s.vault_enabled;
-  if (s.needs_password_change) $("#pwBanner").classList.remove("hidden");
-  go("download");
+  STATE.status = s;
+  const pill = $("#model-pill");
+  pill.classList.toggle("on", !!s.ollama);
+  $("#model-name").textContent = s.ollama
+    ? (s.ollama_model || s.llm_provider)
+    : (s.llm_provider === "ollama" ? "Ollama offline" : s.llm_provider);
+  $("#gen-count").value = s.default_count || 3;
+  if (s.length_min) $("#gen-min").value = Math.round(s.length_min);
+  if (s.length_max) $("#gen-max").value = Math.round(s.length_max);
+  $("#pass-banner").classList.toggle("hidden", !s.needs_password_change);
+  go("create");
 }
-function showLogin() { $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); }
 
-$("#loginBtn").onclick = async () => {
-  $("#loginErr").textContent = "";
-  const fd = new FormData(); fd.append("password", $("#password").value);
-  try { await api("/api/login", { method: "POST", body: fd }); boot(); }
-  catch (e) { $("#loginErr").textContent = "Wrong password"; }
+$("#login-form").onsubmit = async (e) => {
+  e.preventDefault();
+  $("#login-err").textContent = "";
+  const fd = new FormData();
+  fd.append("password", $("#login-pass").value);
+  try {
+    await api("/api/login", { method: "POST", body: fd });
+    $("#login-pass").value = "";
+    boot();
+  } catch (err) { $("#login-err").textContent = "Wrong password"; }
 };
-$("#password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#loginBtn").click(); });
+
+$("#logout").onclick = async () => {
+  try { await api("/api/logout", { method: "POST" }); } catch (e) {}
+  location.reload();
+};
 
 // ====================================================================
-// DOWNLOAD
+// CREATE
 // ====================================================================
-$("#dlRefresh").onclick = loadVideos;
-async function loadVideos() {
+$("#src-seg").onclick = (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  STATE.src = b.dataset.src;
+  $$("#src-seg button").forEach((x) => x.classList.toggle("on", x === b));
+  $("#src-url").classList.toggle("hidden", STATE.src !== "url");
+  $("#src-upload").classList.toggle("hidden", STATE.src !== "upload");
+  $("#src-local").classList.toggle("hidden", STATE.src !== "local");
+};
+$$(".stepper button").forEach((b) => (b.onclick = () => {
+  const inp = $("#gen-count");
+  inp.value = Math.min(10, Math.max(1, (+inp.value || 3) + (+b.dataset.step)));
+}));
+$("#gen-file").onchange = () => {
+  const f = $("#gen-file").files[0];
+  $("#gen-file-label").textContent = f ? f.name : "Choose a video…";
+};
+
+$("#gen-btn").onclick = async () => {
+  $("#gen-err").textContent = "";
+  const fd = new FormData();
+  fd.append("source_type", STATE.src);
+  if (STATE.src === "url") {
+    const u = $("#gen-url").value.trim();
+    if (!u) { $("#gen-err").textContent = "Paste a YouTube link first."; return; }
+    fd.append("url", u);
+  } else if (STATE.src === "upload") {
+    const f = $("#gen-file").files[0];
+    if (!f) { $("#gen-err").textContent = "Choose a video file first."; return; }
+    fd.append("file", f);
+  } else {
+    const n = $("#gen-local").value;
+    if (!n) { $("#gen-err").textContent = "The library is empty."; return; }
+    fd.append("name", n);
+  }
+  fd.append("count", $("#gen-count").value || "3");
+  fd.append("niche", $("#gen-niche").value.trim());
+  fd.append("min_seconds", $("#gen-min").value || "0");
+  fd.append("max_seconds", $("#gen-max").value || "0");
+
+  const btn = $("#gen-btn");
+  btn.disabled = true;
+  try {
+    const r = await api("/api/generate", { method: "POST", body: fd });
+    toast("Generation started");
+    $("#gen-url").value = "";
+    watchBatch(r.batch_id);
+  } catch (e) {
+    $("#gen-err").textContent = e.message;
+  } finally { btn.disabled = false; }
+};
+
+// --- batch progress panels ---
+async function loadActiveBatches() {
+  try {
+    const r = await api("/api/batches");
+    (r.batches || []).filter((b) => !b.done).forEach((b) => watchBatch(b.id));
+  } catch (e) {}
+}
+
+function batchPanel(id) {
+  let el = $(`[data-batch="${id}"]`);
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "card";
+    el.dataset.batch = id;
+    el.innerHTML = `
+      <div class="row spread"><h3>Generating…</h3>
+        <span class="muted small" data-role="pct"></span></div>
+      <div class="progress"><div class="bar"><i style="width:0%"></i></div>
+        <div class="plabel"><span data-role="stage">starting…</span></div></div>
+      <div data-role="note"></div>
+      <div class="batch-shorts" data-role="shorts"></div>`;
+    $("#active-batches").prepend(el);
+  }
+  return el;
+}
+
+function watchBatch(id) {
+  if (STATE.batchPolls[id]) return;
+  const el = batchPanel(id);
+  const tick = async () => {
+    let b;
+    try { b = await api(`/api/batch/${id}`); }
+    catch (e) { stop(); return; }
+    el.querySelector("[data-role=stage]").textContent = b.stage || "…";
+    el.querySelector("[data-role=pct]").textContent =
+      b.percent ? `${Math.round(b.percent)}%` : "";
+    el.querySelector(".bar i").style.width = `${b.percent || 0}%`;
+    el.querySelector("[data-role=note]").innerHTML = b.error
+      ? `<div class="callout-err">${esc(b.error)}</div>`
+      : (b.note ? `<div class="note">${esc(b.note)}</div>` : "");
+    el.querySelector("[data-role=shorts]").innerHTML = (b.shorts || []).map(
+      (j) => `<div class="mini ${esc(j.status)}"><span class="st"></span>
+         <span dir="auto">${esc(j.meta.title || j.topic || j.id)}</span>
+         <span class="muted">· ${esc(j.stage || j.status)}</span></div>`).join("");
+    updateBadge(b.shorts || []);
+    if (b.done) {
+      stop();
+      el.querySelector("h3").textContent = b.error ? "Generation failed" : "Done";
+      if (!b.error) {
+        toast("Shorts are ready for review");
+        setTimeout(() => { el.remove(); }, 4500);
+        go("shorts");
+      }
+    }
+  };
+  const h = setInterval(tick, 2000);
+  const stop = () => { clearInterval(h); delete STATE.batchPolls[id]; };
+  STATE.batchPolls[id] = h;
+  tick();
+}
+
+function updateBadge(shorts) {
+  const n = shorts.filter((j) => j.status === "ready").length;
+  const b = $("#tab-badge");
+  b.textContent = n;
+  b.classList.toggle("hidden", n === 0);
+}
+
+// --- standalone download ---
+$("#dl-btn").onclick = async () => {
+  const u = $("#dl-url").value.trim();
+  if (!u) return;
+  const fd = new FormData(); fd.append("url", u);
+  const box = $("#dl-progress");
+  try {
+    const r = await api("/api/download", { method: "POST", body: fd });
+    $("#dl-url").value = "";
+    box.innerHTML = `<div class="progress"><div class="bar"><i style="width:0%"></i></div>
+      <div class="plabel"><span data-role="st">starting…</span><span data-role="pc"></span></div></div>`;
+    clearInterval(STATE.dlPoll);
+    STATE.dlPoll = setInterval(async () => {
+      let d;
+      try { d = await api(`/api/download/${r.download_id}`); }
+      catch (e) { clearInterval(STATE.dlPoll); return; }
+      box.querySelector("[data-role=st]").textContent = d.error || d.stage;
+      box.querySelector("[data-role=pc]").textContent =
+        d.percent ? `${Math.round(d.percent)}%` : "";
+      box.querySelector(".bar i").style.width = `${d.percent || 0}%`;
+      if (d.done) {
+        clearInterval(STATE.dlPoll);
+        if (!d.error) { toast(`Saved: ${d.file}`); loadLibrary(); }
+        setTimeout(() => (box.innerHTML = ""), 3000);
+      }
+    }, 1000);
+  } catch (e) { toast(e.message); }
+};
+
+// --- library ---
+$("#lib-refresh").onclick = () => loadLibrary();
+async function loadLibrary() {
+  const el = $("#library");
   try {
     const r = await api("/api/library");
-    const el = $("#videoList");
+    const sel = $("#gen-local");
+    sel.innerHTML = r.videos.map(
+      (v) => `<option value="${esc(v.name)}">${esc(v.name)} (${v.size_mb} MB)</option>`).join("");
     el.innerHTML = r.videos.length
       ? r.videos.map((v) => `
         <div class="vrow">
-          <div class="vico">🎞️</div>
-          <div class="vmeta"><div class="vname">${esc(v.name)}</div><div class="muted small">${v.size_mb} MB</div></div>
-          <button class="btn ghost tiny" data-cut="${esc(v.name)}">✂️ Cut</button>
+          <div class="grow"><div class="vname">${esc(v.name)}</div>
+            <div class="muted small">${v.size_mb} MB</div></div>
+          <button class="btn ghost small" data-cut="${esc(v.name)}">Cut into Shorts</button>
         </div>`).join("")
-      : `<div class="empty">${esc(r.dir)}<br>No videos yet — download one above.</div>`;
-    el.querySelectorAll("[data-cut]").forEach((b) => b.onclick = () => {
-      go("create"); selectSource("local");
-      const opt = [...$("#localPick").options].find((o) => o.value === b.dataset.cut);
-      if (opt) $("#localPick").value = b.dataset.cut;
-    });
-  } catch (e) {}
-}
-
-$("#dlBtn").onclick = async () => {
-  $("#dlErr").textContent = "";
-  const url = $("#dlUrl").value.trim();
-  if (!url) { $("#dlErr").textContent = "Paste a URL"; return; }
-  const fd = new FormData(); fd.append("url", url);
-  $("#dlBtn").disabled = true;
-  try {
-    const r = await api("/api/download", { method: "POST", body: fd });
-    $("#dlProgress").classList.remove("hidden");
-    pollDownload(r.download_id);
-  } catch (e) { $("#dlErr").textContent = e.message; $("#dlBtn").disabled = false; }
-};
-function pollDownload(id) {
-  clearInterval(STATE.dlPoll);
-  STATE.dlPoll = setInterval(async () => {
-    let d; try { d = await api("/api/download/" + id); } catch (e) { return; }
-    $("#dlStage").textContent = d.error || d.stage;
-    const m = (d.stage || "").match(/([\d.]+)%/);
-    $("#dlBar").style.width = m ? m[1] + "%" : (d.done ? "100%" : "40%");
-    if (d.done) {
-      clearInterval(STATE.dlPoll); $("#dlBtn").disabled = false;
-      if (d.error) { $("#dlErr").textContent = d.error; }
-      else { toast("Downloaded " + d.file + " ✓"); $("#dlUrl").value = ""; loadVideos();
-             setTimeout(() => $("#dlProgress").classList.add("hidden"), 1500); }
-    }
-  }, 1000);
+      : `<div class="muted small">Nothing downloaded yet.</div>`;
+    el.querySelectorAll("[data-cut]").forEach((b) => (b.onclick = () => {
+      STATE.src = "local";
+      $$("#src-seg button").forEach((x) =>
+        x.classList.toggle("on", x.dataset.src === "local"));
+      $("#src-url").classList.add("hidden");
+      $("#src-upload").classList.add("hidden");
+      $("#src-local").classList.remove("hidden");
+      $("#gen-local").value = b.dataset.cut;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }));
+  } catch (e) { el.innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
 }
 
 // ====================================================================
-// CREATE (make shorts)
+// SHORTS (review + upload)
 // ====================================================================
-$$("#srcSeg .seg-btn").forEach((b) => b.onclick = () => selectSource(b.dataset.src));
-function selectSource(src) {
-  STATE.src = src;
-  $$("#srcSeg .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.src === src));
-  $$(".srcpane").forEach((p) => p.classList.toggle("hidden", p.dataset.pane !== src));
-  if (src === "local") loadLocalOptions();
-}
-async function loadLocalOptions() {
-  try {
-    const r = await api("/api/library");
-    $("#localPick").innerHTML = r.videos.length
-      ? r.videos.map((v) => `<option value="${esc(v.name)}">${esc(v.name)} · ${v.size_mb} MB</option>`).join("")
-      : `<option disabled>(no videos — download one first)</option>`;
-  } catch (e) {}
-}
-$("#cMinus").onclick = () => $("#count").value = Math.max(1, (+$("#count").value || 1) - 1);
-$("#cPlus").onclick = () => $("#count").value = Math.min(20, (+$("#count").value || 1) + 1);
-$("#file").onchange = () => {
-  const f = $("#file").files[0];
-  if (f) { $("#fileLabel").innerHTML = `<b>${esc(f.name)}</b><br><span class="muted small">${(f.size/1e6).toFixed(0)} MB</span>`; $("#filepick").classList.add("has-file"); }
-};
-
-$("#genBtn").onclick = async () => {
-  $("#genErr").textContent = "";
-  const fd = new FormData();
-  fd.append("source_type", STATE.src);
-  fd.append("count", $("#count").value || "3");
-  fd.append("niche", $("#niche").value);
-  fd.append("min_seconds", $("#lenMin").value || "0");
-  fd.append("max_seconds", $("#lenMax").value || "0");
-  if (STATE.src === "upload") {
-    const f = $("#file").files[0];
-    if (!f) { $("#genErr").textContent = "Choose a video"; return; }
-    fd.append("file", f);
-  } else if (STATE.src === "url") {
-    if (!$("#srcUrl").value.trim()) { $("#genErr").textContent = "Paste a URL"; return; }
-    fd.append("url", $("#srcUrl").value.trim());
-  } else {
-    if (!$("#localPick").value) { $("#genErr").textContent = "Pick a video"; return; }
-    fd.append("name", $("#localPick").value);
-  }
-  $("#genBtn").disabled = true;
-  try {
-    const r = await api("/api/generate", { method: "POST", body: fd });
-    STATE.batchId = r.batch_id; STATE.cards = {};
-    $("#createList").innerHTML = "";
-    $("#genProgress").classList.remove("hidden");
-    pollBatch();
-  } catch (e) { $("#genErr").textContent = e.message; }
-  finally { $("#genBtn").disabled = false; }
-};
-
-function pollBatch() {
-  clearInterval(STATE.batchPoll);
-  STATE.batchPoll = setInterval(async () => {
-    let b; try { b = await api("/api/batch/" + STATE.batchId); } catch (e) { return; }
-    $("#genStage").textContent = b.error || b.stage || "working…";
-    (b.shorts || []).forEach((j) => renderCard(j, $("#createList")));
-    if (b.done) {
-      const busy = (b.shorts || []).some((j) => ["processing", "new", "publishing"].includes(j.status));
-      if (!busy) { clearInterval(STATE.batchPoll); $("#genProgress").classList.add("hidden"); }
-    }
-  }, 2000);
-}
-
-// ====================================================================
-// SHORTS LIBRARY
-// ====================================================================
-$("#shRefresh").onclick = loadShorts;
 async function loadShorts() {
-  try {
-    const r = await api("/api/shorts");
-    $("#shortsCount").textContent = `All shorts (${r.shorts.length})`;
-    const el = $("#shortsList");
-    if (!r.shorts.length) { el.innerHTML = `<div class="empty">No shorts yet — make some in Create.</div>`; return; }
-    STATE.cards = {}; el.innerHTML = "";
-    r.shorts.forEach((j) => renderCard(j, el));
-  } catch (e) {}
+  const list = $("#shorts-list");
+  if (!list.children.length) list.innerHTML = `<div class="skel"></div><div class="skel"></div>`;
+  let r;
+  try { r = await api("/api/shorts"); }
+  catch (e) { list.innerHTML = ""; return; }
+  const jobs = r.shorts || [];
+  list.querySelectorAll(".skel").forEach((s) => s.remove());
+  $("#shorts-empty").classList.toggle("hidden", jobs.length > 0);
+  const seen = new Set();
+  jobs.forEach((j) => { seen.add(j.id); upsertCard(j); });
+  Object.keys(STATE.cards).forEach((id) => {
+    if (!seen.has(id)) { STATE.cards[id].remove(); delete STATE.cards[id]; }
+  });
+  updateUploadAll(jobs);
+  updateBadge(jobs);
 }
 
-// ====================================================================
-// SHARED SHORT CARD
-// ====================================================================
-function renderCard(job, container) {
-  let card = STATE.cards[job.id];
+function upsertCard(j) {
+  let card = STATE.cards[j.id];
   if (!card) {
     card = document.createElement("div");
-    card.className = "card short";
-    card.innerHTML = cardHtml(job);
-    container.appendChild(card);
-    STATE.cards[job.id] = card;
-    wireCard(card, job.id);
+    card.className = "short-card";
+    card.dataset.id = j.id;
+    card.innerHTML = cardHtml(j);
+    $("#shorts-list").appendChild(card);
+    STATE.cards[j.id] = card;
+    wireCard(card, j);
   }
-  updateCard(card, job);
+  updateCard(card, j);
+  if (["processing", "publishing", "new"].includes(j.status) || j.stage) pollJob(j.id);
 }
-function cardHtml(job) {
+
+function cardHtml(j) {
   return `
-    <div class="short-head">
-      <span class="badge">${esc(job.topic || "short")}</span>
-      <span class="seg">${job.segment ? job.segment[0].toFixed(0)+"–"+job.segment[1].toFixed(0)+"s" : ""}</span>
+  <div class="media">
+    <video controls playsinline preload="none" src="/api/preview/${j.id}"></video>
+    <div>
+      <div class="thumb-box" data-role="thumb"><span>no thumbnail yet</span></div>
+      <div class="thumb-actions">
+        <button class="btn small" data-act="regen">↻ Regenerate</button>
+        <button class="btn small" data-act="frames">🖼 Pick frame</button>
+        <button class="btn small" data-act="headline">✎ Headline</button>
+      </div>
+      <div data-role="framestrip"></div>
     </div>
-    <video class="prev" controls playsinline preload="none"></video>
-    <div class="status-line"></div>
-    <div class="meta hidden">
-      <label class="field"><span class="lbl">Title</span><input class="t-title" type="text"></label>
-      <label class="field"><span class="lbl">Caption</span><textarea class="t-cap" rows="3"></textarea></label>
-      <label class="field"><span class="lbl">Hashtags</span><input class="t-tags" type="text"></label>
-      <div class="row" style="margin-top:12px">
-        <button class="btn ghost b-regen">✨ AI</button>
-        <button class="btn ghost b-save">Save</button>
-      </div>
-      <details class="perplat"><summary>✏️ Customize per platform (optional)</summary>
-        <p class="muted small" style="margin:6px 0">Leave a field blank to use the caption/hashtags above. Tap <b>Save</b> to keep changes.</p>
-        <div class="pp-body"></div>
-      </details>
-      <div class="pf-row"></div>
-      <div class="row" style="margin-top:10px">
-        <button class="btn ghost b-rehearse">🧪 Rehearse</button>
-        <button class="btn primary b-pub">🚀 Publish</button>
-      </div>
-      <p class="muted small" style="margin:6px 0 0">Rehearse = drive each upload to the post button and screenshot it — posts nothing.</p>
-      <div class="results"></div>
-    </div>`;
+  </div>
+  <div class="badge-row" data-role="badges"></div>
+  <div data-role="why"></div>
+  <div class="fields">
+    <label>Title
+      <input data-f="title" type="text" maxlength="100" dir="auto">
+      <span class="charcount" data-role="tcount"></span>
+    </label>
+    <label>Description
+      <textarea data-f="description" rows="4" dir="auto"></textarea>
+    </label>
+    <label>Hashtags <span class="hint">(space separated)</span>
+      <input data-f="hashtags" type="text" dir="auto">
+    </label>
+    <label class="hidden" data-role="headline-row">Thumbnail headline
+      <input data-f="headline" type="text" dir="auto">
+    </label>
+    <div class="row">
+      <button class="btn small" data-act="save">Save</button>
+      <button class="btn small" data-act="ai">AI rewrite</button>
+    </div>
+  </div>
+  <div class="upload-row">
+    <select data-role="privacy">
+      <option value="public">Public</option>
+      <option value="unlisted">Unlisted</option>
+      <option value="private">Private</option>
+    </select>
+    <button class="btn primary" data-act="upload">Upload to YouTube</button>
+  </div>
+  <div data-role="status"></div>`;
 }
-function wireCard(card, id) {
-  const q = (s) => card.querySelector(s);
-  q(".b-save").onclick = async () => { try { await saveMeta(id, card); toast("Saved ✓"); } catch (e) { setStatus(card, e.message, true); } };
-  q(".b-regen").onclick = async () => {
-    const b = q(".b-regen"); b.disabled = true; b.textContent = "…";
-    try { const r = await api(`/api/job/${id}/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ niche: $("#niche").value }) }); fillMeta(card, r.meta); toast("Rewrote with AI"); }
-    catch (e) { setStatus(card, e.message, true); }
-    finally { b.disabled = false; b.textContent = "✨ AI"; }
-  };
-  q(".b-pub").onclick = async () => {
-    const platforms = [...card.querySelectorAll(".pf.on")].map((p) => p.dataset.p);
-    if (!platforms.length) { setStatus(card, "Pick a platform", true); return; }
+
+function wireCard(card, j0) {
+  const id = j0.id;
+  const F = (n) => card.querySelector(`[data-f="${n}"]`);
+
+  F("title").addEventListener("input", () => {
+    card.querySelector("[data-role=tcount]").textContent =
+      `${F("title").value.length}/100`;
+  });
+
+  card.querySelector("[data-act=save]").onclick = async () => {
     try {
-      await saveMeta(id, card);
-      await api(`/api/job/${id}/publish`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platforms }) });
-      setStatus(card, "publishing…", false); q(".b-pub").disabled = true;
-      pollJob(id, card);
-    } catch (e) { setStatus(card, e.message, true); }
+      await jpost(`/api/job/${id}/meta`, {
+        title: F("title").value,
+        description: F("description").value,
+        hashtags: F("hashtags").value.split(/\s+/).filter(Boolean),
+        thumbnail_headline: F("headline").value,
+      });
+      toast("Saved");
+    } catch (e) { toast(e.message); }
   };
-  q(".b-rehearse").onclick = async () => {
-    const platforms = [...card.querySelectorAll(".pf.on")].map((p) => p.dataset.p);
-    if (!platforms.length) { setStatus(card, "Pick a platform", true); return; }
+
+  card.querySelector("[data-act=ai]").onclick = async (e) => {
+    const b = e.target; b.disabled = true; b.textContent = "Writing…";
     try {
-      await saveMeta(id, card);
-      await api(`/api/job/${id}/rehearse`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ platforms }) });
-      setStatus(card, "rehearsing… (driving each upload, posting nothing)", false, true);
-      q(".b-rehearse").disabled = true; q(".b-pub").disabled = true;
-      pollJob(id, card);
-    } catch (e) { setStatus(card, e.message, true); }
+      const r = await jpost(`/api/job/${id}/generate`, { niche: "" });
+      fillFields(card, r.meta);
+      toast("Rewritten — review then Save");
+    } catch (err) { toast(err.message); }
+    b.disabled = false; b.textContent = "AI rewrite";
   };
+
+  card.querySelector("[data-act=regen]").onclick = () =>
+    regenThumb(card, id, {});
+
+  card.querySelector("[data-act=headline]").onclick = () => {
+    const row = card.querySelector("[data-role=headline-row]");
+    if (row.classList.contains("hidden")) { row.classList.remove("hidden"); return; }
+    regenThumb(card, id, { headline: F("headline").value });
+  };
+
+  card.querySelector("[data-act=frames]").onclick = async () => {
+    const strip = card.querySelector("[data-role=framestrip]");
+    if (strip.innerHTML) { strip.innerHTML = ""; return; }
+    try {
+      const r = await api(`/api/job/${id}/frames`);
+      if (!(r.frames || []).length) { toast("No candidate frames stored"); return; }
+      strip.innerHTML = `<div class="frame-strip">` + r.frames.map(
+        (f) => `<img src="/api/job/${id}/frames/${esc(f.name)}"
+                     data-t="${f.t}" title="${f.t}s">`).join("") + `</div>`;
+      strip.querySelectorAll("img").forEach((im) => (im.onclick = () => {
+        strip.querySelectorAll("img").forEach((x) => x.classList.remove("sel"));
+        im.classList.add("sel");
+        regenThumb(card, id, { frame_t: +im.dataset.t });
+      }));
+    } catch (e) { toast(e.message); }
+  };
+
+  card.querySelector("[data-act=upload]").onclick = () => uploadJob(card, id);
 }
-function updateCard(card, job) {
-  const q = (s) => card.querySelector(s);
-  if (job.status === "processing" || job.status === "new") { setStatus(card, (job.stage || "rendering…"), false, true); return; }
-  if (job.status === "error") { setStatus(card, "failed: " + job.error, true); return; }
-  const v = q(".prev"); if (!v.src) v.src = "/api/preview/" + job.id;
-  q(".meta").classList.remove("hidden");
-  if (!card.dataset.loaded) {
-    q(".pf-row").innerHTML = STATE.platforms.map((p) =>
-      `<span class="pf on" data-p="${p}">${icon(p)} ${p}</span>`).join("");
-    q(".pf-row").querySelectorAll(".pf").forEach((pf) => pf.onclick = () => pf.classList.toggle("on"));
-    q(".pp-body").innerHTML = STATE.platforms.map((p) => ppHtml(p)).join("");
-    fillMeta(card, job.meta);           // fill base + per-platform after fields exist
-    card.dataset.loaded = "1";
+
+async function regenThumb(card, id, body) {
+  try {
+    await jpost(`/api/job/${id}/thumbnail`, body);
+    toast("Rebuilding thumbnail…");
+    pollJob(id);
+  } catch (e) { toast(e.message); }
+}
+
+async function uploadJob(card, id) {
+  const btn = card.querySelector("[data-act=upload]");
+  const privacy = card.querySelector("[data-role=privacy]").value;
+  btn.disabled = true;
+  try {
+    // auto-save edits first so what you see is what uploads
+    card.querySelector("[data-act=save]").click();
+    await jpost(`/api/job/${id}/upload`, {
+      privacy, embed_thumb: STATE.status.embed_thumb,
+    });
+    toast("Upload started");
+    pollJob(id);
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
   }
-  const uploaded = Object.values(job.results || {}).some((r) => r.ok);
-  if (uploaded && !q(".badge.up")) q(".short-head").insertAdjacentHTML("beforeend", `<span class="badge up">✓ uploaded</span>`);
-  if (job.status === "done") setStatus(card, "", false);
-  renderResults(card, job);
 }
-function pollJob(id, card) {
-  const t = setInterval(async () => {
-    let j; try { j = await api("/api/job/" + id); } catch (e) { return; }
-    updateCard(card, j);
-    if (["done", "error", "ready"].includes(j.status) && j.status !== "publishing") {
-      if (Object.keys(j.results || {}).length || j.status === "error") {
-        clearInterval(t);
-        card.querySelector(".b-pub").disabled = false;
-        const rb = card.querySelector(".b-rehearse"); if (rb) rb.disabled = false;
+
+function fillFields(card, meta) {
+  const F = (n) => card.querySelector(`[data-f="${n}"]`);
+  F("title").value = meta.title || "";
+  F("description").value = meta.description || "";
+  F("hashtags").value = (meta.hashtags || []).join(" ");
+  F("headline").value = meta.thumbnail_headline || "";
+  card.querySelector("[data-role=tcount]").textContent =
+    `${(meta.title || "").length}/100`;
+}
+
+function updateCard(card, j) {
+  // fields: fill only when untouched by the user (avoid clobbering edits)
+  if (!card.dataset.filled && (j.meta.title || j.meta.description)) {
+    fillFields(card, j.meta);
+    card.dataset.filled = "1";
+  }
+  if (j.privacy) card.querySelector("[data-role=privacy]").value = j.privacy;
+
+  // badges
+  const badges = [];
+  if (j.score > 0) badges.push(`<span class="score-badge">${Math.round(j.score)}</span>`);
+  if (j.topic) badges.push(`<span class="topic-chip" dir="auto">${esc(j.topic)}</span>`);
+  if (j.duration && j.segment)
+    badges.push(`<span class="topic-chip">${Math.round(j.segment[0])}s → ${Math.round(j.segment[1])}s</span>`);
+  if (j.reason)
+    badges.push(`<button class="linkish" data-act="why">Why this clip?</button>`);
+  const brow = card.querySelector("[data-role=badges]");
+  if (brow.innerHTML !== badges.join("")) {
+    brow.innerHTML = badges.join("");
+    const why = brow.querySelector("[data-act=why]");
+    if (why) why.onclick = () => {
+      const w = card.querySelector("[data-role=why]");
+      w.innerHTML = w.innerHTML ? "" : `<div class="why" dir="auto">${esc(j.reason)}</div>`;
+    };
+  }
+
+  // thumbnail
+  const tb = card.querySelector("[data-role=thumb]");
+  if (j.has_thumb && tb.dataset.v !== String(j.has_thumb) + (j.stage || "")) {
+    if (!j.stage) {
+      tb.innerHTML = `<img src="/api/job/${j.id}/thumbnail?t=${Date.now()}">`;
+      tb.dataset.v = String(j.has_thumb);
+    }
+  }
+
+  // status line
+  const st = card.querySelector("[data-role=status]");
+  const yt = (j.results || {}).youtube;
+  let html = "";
+  if (j.status === "processing" || j.status === "publishing" || j.stage) {
+    html = `<div class="stage-line"><span class="spinner"></span>${esc(j.stage || j.status)}…</div>`;
+  } else if (j.status === "error") {
+    html = `<div class="result-err">${esc(j.error)}</div>`;
+  } else if (yt && yt.ok && !yt.dry_run) {
+    const url = yt.url || `https://youtube.com/shorts/${j.youtube_id}`;
+    html = `<div class="result-ok">✓ Uploaded — <a href="${esc(url)}" target="_blank" rel="noopener">watch on YouTube</a></div>`;
+    if (j.thumb_api) html += `<div class="thumb-api-note">API thumbnail: ${esc(j.thumb_api)}</div>`;
+  } else if (yt && !yt.ok) {
+    html = `<div class="result-err">${esc(yt.error)}</div>`;
+    if (yt.needs_login) html += `<div class="thumb-api-note">Re-auth on the PC: <code>python -m studio.login_setup</code></div>`;
+  }
+  if (st.innerHTML !== html) st.innerHTML = html;
+
+  const upBtn = card.querySelector("[data-act=upload]");
+  const busy = ["processing", "publishing"].includes(j.status) || !!j.stage;
+  upBtn.disabled = busy || !j.has_output;
+  if (yt && yt.ok && !yt.dry_run) upBtn.textContent = "Upload again";
+}
+
+function pollJob(id) {
+  if (STATE.jobPolls[id]) return;
+  const tick = async () => {
+    let j;
+    try { j = await api(`/api/job/${id}`); }
+    catch (e) { stop(); return; }
+    const card = STATE.cards[id];
+    if (card) updateCard(card, j);
+    const settled = ["ready", "done", "error"].includes(j.status) && !j.stage;
+    if (settled) {
+      stop();
+      // one final thumbnail refresh after a rebuild finished
+      if (card && j.has_thumb) {
+        const tb = card.querySelector("[data-role=thumb]");
+        tb.innerHTML = `<img src="/api/job/${id}/thumbnail?t=${Date.now()}">`;
+      }
+      if (STATE.uploadQueue.length && STATE.uploadQueue[0] === id) {
+        STATE.uploadQueue.shift();
+        runUploadQueue();
       }
     }
-  }, 2000);
-}
-// Per-platform editor block (description + hashtags; YouTube also a title).
-function ppHtml(p) {
-  const yt = p === "youtube";
-  return `<div class="pp" data-pp="${p}">
-    <div class="pp-h">${icon(p)} ${p}</div>
-    ${yt ? `<input class="pp-title" type="text" placeholder="title — blank = use the one above">` : ""}
-    <textarea class="pp-cap" rows="2" placeholder="description — blank = use the caption above"></textarea>
-    <input class="pp-tags" type="text" placeholder="hashtags — blank = use the ones above">
-  </div>`;
-}
-async function saveMeta(id, card) {
-  const meta = {
-    title: card.querySelector(".t-title").value,
-    caption: card.querySelector(".t-cap").value,
-    hashtags: card.querySelector(".t-tags").value,
-    overrides: {},
   };
-  card.querySelectorAll(".pp").forEach((el) => {
-    const o = {};
-    const t = el.querySelector(".pp-title"); if (t && t.value.trim()) o.title = t.value.trim();
-    const c = el.querySelector(".pp-cap").value.trim(); if (c) o.caption = c;
-    const g = el.querySelector(".pp-tags").value.trim(); if (g) o.hashtags = g;
-    if (Object.keys(o).length) meta.overrides[el.dataset.pp] = o;
-  });
-  const r = await api(`/api/job/${id}/meta`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) });
-  return r.meta;
+  const h = setInterval(tick, 2000);
+  const stop = () => { clearInterval(h); delete STATE.jobPolls[id]; };
+  STATE.jobPolls[id] = h;
 }
-function fillMeta(card, meta) {
-  card.querySelector(".t-title").value = meta.title || "";
-  card.querySelector(".t-cap").value = meta.caption || "";
-  card.querySelector(".t-tags").value = (meta.hashtags || []).join(" ");
-  const ov = meta.overrides || {};
-  card.querySelectorAll(".pp").forEach((el) => {
-    const o = ov[el.dataset.pp] || {};
-    const t = el.querySelector(".pp-title"); if (t) t.value = o.title || "";
-    el.querySelector(".pp-cap").value = o.caption || "";
-    el.querySelector(".pp-tags").value = Array.isArray(o.hashtags) ? o.hashtags.join(" ") : (o.hashtags || "");
-  });
+
+// --- upload all ---
+function updateUploadAll(jobs) {
+  const ready = jobs.filter((j) => j.status === "ready" && j.meta.title);
+  const bar = $("#upload-all-bar");
+  bar.classList.toggle("hidden", ready.length < 2);
+  $("#upload-all-btn").textContent = `Upload all (${ready.length})`;
+  $("#upload-all-btn").onclick = () => {
+    if (!confirm(`Upload ${ready.length} shorts to YouTube?`)) return;
+    STATE.uploadQueue = ready.map((j) => j.id);
+    runUploadQueue();
+  };
 }
-function renderResults(card, job) {
-  const r = job.results || {}; if (!Object.keys(r).length) return;
-  card.querySelector(".results").innerHTML = Object.entries(r).map(([p, res]) =>
-    `<div class="result"><span>${icon(p)} ${p}</span>${res.ok
-      ? (res.dry_run
-        ? `<span class="ok">🧪 ready${res.url ? ` <a href="${res.url}" target="_blank">view composer</a>` : ""} <span class="muted small">· not posted</span></span>`
-        : `<span class="ok">✓${res.url ? ` <a href="${res.url}" target="_blank">view</a>` : ""}</span>`)
-      : `<span class="bad">✗ ${res.needs_login ? "login needed" : esc(res.error)}</span>`}</div>`).join("");
-}
-function setStatus(card, text, bad, spin) {
-  const el = card.querySelector(".status-line");
-  el.innerHTML = (spin ? `<span class="spinner"></span>` : "") + esc(text);
-  el.className = "status-line" + (bad ? " bad" : "");
+
+function runUploadQueue() {
+  const id = STATE.uploadQueue[0];
+  if (!id) { toast("All uploads started/finished"); loadShorts(); return; }
+  const card = STATE.cards[id];
+  if (card) uploadJob(card, id);
+  else STATE.uploadQueue.shift();
 }
 
 // ====================================================================
-// AI MODEL
+// SETTINGS
 // ====================================================================
-let MODELS = null;
-const PROV_LABEL = { ollama: "Ollama", openai: "OpenAI", anthropic: "Claude", gemini: "Gemini" };
-
 async function loadModels() {
-  try { MODELS = await api("/api/models"); } catch (e) { return; }
-  $("#provSel").value = MODELS.provider;
-  renderModelPanel();
+  let m;
+  try { m = await api("/api/models"); } catch (e) { return; }
+  STATE.models = m;
+  const prov = $("#m-provider");
+  prov.innerHTML = m.providers.map(
+    (p) => `<option value="${p}" ${p === m.provider ? "selected" : ""}>${p}</option>`).join("");
+  renderModelList();
+  prov.onchange = renderModelList;
+  $("#m-status").textContent = m.active_available ? "active model reachable ✓" : "";
 }
-function renderModelPanel() {
-  const prov = $("#provSel").value;
-  const isCloud = prov !== "ollama";
-  $("#keyRow").classList.toggle("hidden", !isCloud);
-  if (isCloud) {
-    const has = MODELS.keys[prov];
-    $("#keyState").textContent = has ? "✓ saved" : (MODELS.vault_enabled ? "not set" : "(vault off)");
-    $("#apiKey").value = "";
-  }
-  // model options
-  const opts = isCloud ? (MODELS.cloud_models[prov] || []) : (MODELS.ollama_models || []);
-  const sel = $("#modelSel");
-  sel.innerHTML = opts.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("")
-    + `<option value="__custom__">✏️ custom…</option>`;
-  if (prov === MODELS.provider && MODELS.model && opts.includes(MODELS.model)) sel.value = MODELS.model;
-  if (!opts.length && !isCloud) sel.innerHTML = `<option value="__custom__">✏️ type model id…</option>`;
-  onModelSelChange();
-  // active chip
-  const active = MODELS.active_available;
-  $("#modelChip").className = "cc " + (active ? "ok" : "warn");
-  $("#modelChip").textContent = `${PROV_LABEL[MODELS.provider] || MODELS.provider}${MODELS.model ? " · " + MODELS.model : ""}`;
+
+function renderModelList() {
+  const m = STATE.models;
+  const p = $("#m-provider").value;
+  const list = p === "ollama" ? (m.ollama_models || []) : (m.cloud_models[p] || []);
+  $("#m-model").innerHTML = list.map(
+    (x) => `<option ${x === m.model ? "selected" : ""}>${esc(x)}</option>`).join("")
+    || `<option value="">(none found)</option>`;
+  const needsKey = p !== "ollama";
+  $("#m-key-row").classList.toggle("hidden", !needsKey);
+  if (needsKey && m.keys[p]) $("#m-key").placeholder = "key saved ✓ (write to replace)";
 }
-function onModelSelChange() {
-  const custom = $("#modelSel").value === "__custom__";
-  $("#modelCustom").classList.toggle("hidden", !custom);
-}
-$("#provSel").onchange = renderModelPanel;
-$("#modelSel").onchange = onModelSelChange;
-$("#keySave").onclick = async () => {
-  $("#modelMsg").textContent = "";
-  const key = $("#apiKey").value.trim();
-  if (!key) { $("#modelMsg").textContent = "Paste your API key"; return; }
+
+$("#m-apply").onclick = async () => {
+  const provider = $("#m-provider").value;
+  const model = $("#m-custom").value.trim() || $("#m-model").value;
   try {
-    await api("/api/models/key", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, key }) });
-    toast("API key saved 🔒"); loadModels();
-  } catch (e) { $("#modelMsg").textContent = e.message; }
-};
-function chosenModel() {
-  const m = $("#modelSel").value;
-  return m === "__custom__" ? $("#modelCustom").value.trim() : m;
-}
-$("#modelSave").onclick = async () => {
-  $("#modelMsg").textContent = "";
-  try {
-    const r = await api("/api/models/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, model: chosenModel() }) });
-    toast(r.available ? "Model set ✓" : "Set — but not reachable (check key/Ollama)");
-    boot(); loadModels();
-  } catch (e) { $("#modelMsg").textContent = e.message; }
-};
-$("#modelTest").onclick = async () => {
-  const msg = $("#modelMsg");
-  msg.className = "status-line"; msg.innerHTML = `<span class="spinner"></span>testing…`;
-  try {
-    const r = await api("/api/models/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: $("#provSel").value, model: chosenModel() }) });
-    msg.className = "status-line" + (r.ok ? "" : " bad");
-    msg.textContent = r.ok ? `✅ replied: "${r.reply}"` : "❌ " + r.error;
-  } catch (e) { msg.className = "status-line bad"; msg.textContent = e.message; }
+    const key = $("#m-key").value.trim();
+    if (key && provider !== "ollama") {
+      await jpost("/api/models/key", { provider, key });
+      $("#m-key").value = "";
+    }
+    const r = await jpost("/api/models/select", { provider, model });
+    $("#m-status").textContent = r.available ? "applied ✓" : "applied — not reachable yet";
+    toast("Model applied");
+    boot();
+  } catch (e) { $("#m-status").textContent = e.message; }
 };
 
-// ====================================================================
-// CONNECTIONS
-// ====================================================================
-$("#healthRefresh").onclick = loadHealth;
-async function loadHealth() {
+$("#m-test").onclick = async () => {
+  $("#m-status").textContent = "testing…";
   try {
-    const h = await api("/api/health");
-    $("#healthChecks").innerHTML = h.checks.map((c) =>
-      `<div class="vrow"><div class="vico">${c.ok ? "✅" : (c.critical ? "❌" : "⚠️")}</div>
-        <div class="vmeta"><div class="vname">${esc(c.name)}</div>
-        <div class="muted small">${esc(c.detail || "")}</div></div></div>`).join("");
+    const r = await jpost("/api/models/test", {
+      provider: $("#m-provider").value,
+      model: $("#m-custom").value.trim() || $("#m-model").value,
+    });
+    $("#m-status").textContent = r.ok ? `✓ ${r.reply}` : `✗ ${r.error}`;
+  } catch (e) { $("#m-status").textContent = e.message; }
+};
+
+async function loadYouTube() {
+  try {
+    const r = await api("/api/connections");
+    const y = r.youtube || {};
+    $("#yt-status").innerHTML = `
+      <div class="hrow"><span class="st ${y.has_token ? "ok" : "bad"}"></span>
+        <div class="grow">Authorized token</div>
+        <span class="muted small">${y.has_token ? "saved" : "missing"}</span></div>
+      <div class="hrow"><span class="st ${y.has_client_secret ? "ok" : "warn"}"></span>
+        <div class="grow">OAuth client secret</div>
+        <span class="muted small">${y.has_client_secret ? "found" : "missing"}</span></div>`;
   } catch (e) {}
 }
 
-async function loadConnections() {
-  let data;
-  try { data = await api("/api/connections"); } catch (e) { return; }
-  STATE.strategies = data.strategies;
-  $("#connList").innerHTML = data.platforms.map((p) => connCard(p, data.vault_enabled)).join("");
-  data.platforms.forEach((p) => wireConn(p.platform));
-}
-
-function chip(p) {
-  // Prefer the last health-check result (it reflects edge_profile too).
-  if (p.health) {
-    return p.health.ok
-      ? `<span class="cc ok">connected${p.health.strategy ? " · " + p.health.strategy : ""}</span>`
-      : `<span class="cc bad">not connected</span>`;
-  }
-  if (p.is_api) return p.has_session ? `<span class="cc ok">connected</span>` : `<span class="cc warn">not set up</span>`;
-  if (p.has_session) return `<span class="cc ok">session ✓</span>`;
-  if (p.edge_configured) return `<span class="cc warn">via Edge · tap Check</span>`;
-  if (p.credentials.has_credentials) return `<span class="cc warn">credentials only</span>`;
-  return `<span class="cc bad">not connected</span>`;
-}
-
-function connCard(p, vaultEnabled) {
-  const opts = (STATE.strategies || []).map((s) =>
-    `<option value="${s}" ${s === p.strategy ? "selected" : ""}>${s}</option>`).join("");
-  const credBlock = p.is_api
-    ? `<p class="muted small">Uses the YouTube API. Run <code>python -m studio.login_setup youtube</code> on the PC once to authorize.</p>`
-    : (vaultEnabled ? `
-      <details class="credbox"><summary>Credentials ${p.credentials.has_password ? "✓" : ""}</summary>
-        <label class="field"><span class="lbl">Username</span><input class="c-user" type="text" value="${esc(p.credentials.username || "")}"></label>
-        <label class="field"><span class="lbl">Password</span><input class="c-pass" type="password" placeholder="${p.credentials.has_password ? "•••••• (stored)" : ""}"></label>
-        <label class="field"><span class="lbl">2FA secret <span class="muted small">(optional, base32)</span></span><input class="c-totp" type="text" placeholder="${p.credentials.has_totp ? "•••••• (stored)" : ""}"></label>
-        <div class="row"><button class="btn ghost c-save">Save</button><button class="btn ghost c-clear">Clear</button></div>
-        <p class="muted small">Stored encrypted on your PC. Add a 2FA secret for hands-free re-login; otherwise you'll be asked for the 6-digit code when you log in.</p>
-      </details>` : `<p class="muted small">Credential storage disabled (cryptography not installed).</p>`);
-  return `<div class="card conn" data-p="${p.platform}">
-    <div class="short-head"><span class="badge">${icon(p.platform)} ${p.platform}</span>${chip(p)}</div>
-    <label class="field"><span class="lbl">Login strategy</span>
-      <select class="c-strat select">${opts}</select></label>
-    ${credBlock}
-    <div class="row" style="margin-top:12px">
-      <button class="btn ghost c-check">🩺 Check</button>
-      ${p.is_api ? "" : `<button class="btn primary c-login">🔐 Log in</button>`}
-    </div>
-    <div class="codebox" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"></div>
-    <div class="status-line"></div>
-  </div>`;
-}
-
-function wireConn(platform) {
-  const card = document.querySelector(`.conn[data-p="${platform}"]`);
-  if (!card) return;
-  const q = (s) => card.querySelector(s);
-  q(".c-strat").onchange = async () => {
-    try { await api(`/api/connections/${platform}/strategy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ strategy: q(".c-strat").value }) }); toast("Strategy saved"); }
-    catch (e) { toast(e.message); }
-  };
-  if (q(".c-save")) q(".c-save").onclick = async () => {
-    const body = { username: q(".c-user").value, password: q(".c-pass").value, totp_secret: q(".c-totp").value };
-    if (!body.username || !body.password) { setLine(card, "username + password required", true); return; }
-    try { await api(`/api/connections/${platform}/credentials`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("Credentials saved 🔒"); loadConnections(); }
-    catch (e) { setLine(card, e.message, true); }
-  };
-  if (q(".c-clear")) q(".c-clear").onclick = async () => {
-    try { await api(`/api/connections/${platform}/credentials`, { method: "DELETE" }); toast("Cleared"); loadConnections(); }
-    catch (e) { setLine(card, e.message, true); }
-  };
-  q(".c-check").onclick = () => runConn(platform, card, "health");
-  if (q(".c-login")) q(".c-login").onclick = () => interactiveLogin(platform, card);
-}
-
-// Phone-driven login: send credentials (+ 6-digit code when the platform asks)
-// to the PC, which logs into the app's own profile and saves the session.
-async function interactiveLogin(platform, card) {
-  const q = (s) => card.querySelector(s);
-  const codebox = q(".codebox");
-  const body = {};
-  if (q(".c-user")) body.username = q(".c-user").value.trim();
-  if (q(".c-pass")) body.password = q(".c-pass").value;
-  if (q(".c-totp")) body.totp_secret = q(".c-totp").value.trim();
-  codebox.innerHTML = "";
-  setLine(card, "logging in…", false, true);
-  let r;
+$("#yt-check").onclick = async () => {
+  const out = $("#yt-check-out");
+  out.textContent = "checking…";
   try {
-    r = await api(`/api/connections/${platform}/login-now`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body) });
-  } catch (e) { setLine(card, e.message, true); return; }
-
-  let boxVisible = false;
-  const poll = setInterval(async () => {
-    let run; try { run = await api("/api/connections/run/" + r.run_id); } catch (e) { return; }
-    if (run.stage === "awaiting_code" && !boxVisible) {
-      boxVisible = true;
-      setLine(card, run.prompt || "Enter the 6-digit code", false);
-      codebox.innerHTML =
-        `<input class="c-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"
-           placeholder="6-digit code" style="flex:1;min-width:120px;padding:10px;border-radius:10px">
-         <button class="btn primary c-codesend">Submit code</button>`;
-      const inp = codebox.querySelector(".c-code");
-      const send = codebox.querySelector(".c-codesend");
-      inp.focus();
-      const submit = async () => {
-        const code = inp.value.trim();
-        if (!code) return;
-        send.disabled = true;
-        try {
-          await api("/api/connections/login/code", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ run_id: r.run_id, code }) });
-          codebox.innerHTML = "";
-          boxVisible = false;
-          setLine(card, "submitting code…", false, true);
-        } catch (e) { send.disabled = false; setLine(card, e.message, true); }
-      };
-      send.onclick = submit;
-      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
-    }
-    if (!run.done) return;
-    clearInterval(poll);
-    codebox.innerHTML = "";
-    if (run.error) { setLine(card, run.error, true); return; }
-    const res = run.result || {};
-    setLine(card, (res.ok ? "✅ " : "❌ ") + (res.detail || ""), !res.ok);
-    loadConnections();
-  }, 1500);
-}
-
-async function runConn(platform, card, kind) {
-  setLine(card, kind === "health" ? "checking…" : "connecting…", false, true);
-  try {
-    const r = await api(`/api/connections/${platform}/${kind}`, { method: "POST" });
+    const r = await jpost("/api/connections/youtube/health", {});
     const poll = setInterval(async () => {
-      let run; try { run = await api("/api/connections/run/" + r.run_id); } catch (e) { return; }
-      if (!run.done) return;
+      const s = await api(`/api/connections/run/${r.run_id}`);
+      if (!s.done) return;
       clearInterval(poll);
-      if (run.error) { setLine(card, run.error, true); return; }
-      const res = run.result || {};
-      setLine(card, (res.ok ? "✅ " : "❌ ") + (res.detail || "") + (res.strategy ? ` (${res.strategy})` : ""), !res.ok);
-      loadConnections();
+      const res = s.result || {};
+      out.textContent = s.error ? `✗ ${s.error}`
+        : (res.ok ? `✓ ${res.detail}` : `✗ ${res.detail}`);
+      loadYouTube();
     }, 1500);
-  } catch (e) { setLine(card, e.message, true); }
+  } catch (e) { out.textContent = e.message; }
+};
+
+$("#health-refresh").onclick = () => loadHealth();
+async function loadHealth() {
+  const el = $("#health-list");
+  try {
+    const h = await api("/api/health");
+    el.innerHTML = h.checks.map((c) => `
+      <div class="hrow">
+        <span class="st ${c.ok ? "ok" : (c.critical ? "bad" : "warn")}"></span>
+        <div class="grow">${esc(c.name)}
+          ${c.detail ? `<div class="detail">${esc(c.detail)}</div>` : ""}</div>
+      </div>`).join("");
+  } catch (e) { el.innerHTML = `<div class="muted small">${esc(e.message)}</div>`; }
 }
 
-function setLine(card, text, bad, spin) {
-  const el = card.querySelector(".status-line");
-  el.innerHTML = (spin ? `<span class="spinner"></span>` : "") + esc(text);
-  el.className = "status-line" + (bad ? " bad" : "");
-}
-
+// ---------- go ----------
 boot();

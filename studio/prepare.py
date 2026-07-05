@@ -17,7 +17,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .config import PLATFORMS, StudioConfig
+from .config import StudioConfig
 from .llm import OllamaClient
 
 OK = "[ OK ]"
@@ -27,7 +27,7 @@ WARN = "[warn]"
 
 # ---------------------------------------------------------------------------
 def check(cfg: StudioConfig) -> int:
-    print("\n=== Daily Shorts Studio - environment check ===\n")
+    print("\n=== YouTube Shorts Studio - environment check ===\n")
     problems = 0
 
     # ffmpeg / ffprobe -------------------------------------------------------
@@ -90,15 +90,10 @@ def check(cfg: StudioConfig) -> int:
             else:
                 print(f"  -->  pinned in config: {cfg.ollama_model}")
 
-    # Platform logins (sessions present?) ------------------------------------
-    print("\n  Platform login sessions (for later, when you publish):")
-    for p in PLATFORMS:
-        sess = cfg.session_dir_for(p)
-        if p == "youtube":
-            ready = Path(cfg.youtube_token).exists()
-        else:
-            ready = sess.exists() and any(sess.iterdir()) if sess.exists() else False
-        print(f"        {p:<11} {'saved' if ready else 'not set up yet'}")
+    # YouTube authorization (for later, when you upload) ----------------------
+    ready = Path(cfg.youtube_token).exists()
+    print(f"\n  YouTube authorization: "
+          f"{'saved' if ready else 'not set up yet (python -m studio.login_setup)'}")
 
     print("\n" + ("All good - ready to test!" if problems == 0
                   else f"{problems} blocker(s) above to fix first.") + "\n")
@@ -106,8 +101,7 @@ def check(cfg: StudioConfig) -> int:
 
 
 # ---------------------------------------------------------------------------
-def prepare(video: str, cfg: StudioConfig, niche: str = "",
-            per_platform: bool = False) -> int:
+def prepare(video: str, cfg: StudioConfig, niche: str = "") -> int:
     from .downloader import download, is_url
     if is_url(video):
         print(f"Downloading source from URL…\n  {video}")
@@ -130,16 +124,15 @@ def prepare(video: str, cfg: StudioConfig, niche: str = "",
     store = JobStore(cfg.db_path)
     pipe = StudioPipeline(cfg, store)
 
-    if cfg.ollama_enabled and pipe.ollama.available():
-        model = pipe.ollama.resolve_model()
-        print(f"\nUsing Ollama model: {model}")
+    if cfg.ollama_enabled and pipe.llm.available():
+        model = pipe.llm.resolve_model()
+        print(f"\nUsing model: {model}")
     else:
-        print("\nOllama unavailable - will reframe only, captions left blank.")
+        print("\nLLM unavailable - will reframe only, copy left blank.")
 
     print(f"Preparing (NO upload): {path.name}\n")
     job = store.create(str(path.resolve()))
-    job = pipe.process_job(job, auto_metadata=True, per_platform=per_platform,
-                           niche=niche)
+    job = pipe.process_job(job, auto_metadata=True, niche=niche)
 
     print("\n--------------------------------------------------------")
     if job.status == "error":
@@ -157,14 +150,13 @@ def prepare(video: str, cfg: StudioConfig, niche: str = "",
         snippet = job.transcript[:200].replace("\n", " ")
         print(f"  transcript      : {snippet}{'...' if len(job.transcript) > 200 else ''}")
     print(f"  vertical output : {job.output_path}")
-    print("\n  Drafted metadata:")
-    print(f"    title    : {job.meta.title or '(none)'}")
-    print(f"    caption  : {job.meta.caption or '(none)'}")
-    print(f"    hashtags : {' '.join(job.meta.hashtags) or '(none)'}")
-    if job.meta.overrides:
-        print(f"    per-platform overrides for: {', '.join(job.meta.overrides)}")
+    print("\n  Drafted copy:")
+    print(f"    title       : {job.meta.title or '(none)'}")
+    print(f"    description : {job.meta.description or '(none)'}")
+    print(f"    headline    : {job.meta.thumbnail_headline or '(none)'}")
+    print(f"    hashtags    : {' '.join(job.meta.hashtags) or '(none)'}")
     print("\n  Open the vertical file above to check the framing.")
-    print("  Nothing was uploaded. To publish, use the web app and tap Publish.\n")
+    print("  Nothing was uploaded. To upload, use the web app.\n")
     return 0
 
 
@@ -203,13 +195,11 @@ def main(argv: list[str] | None = None) -> int:
         if i + 1 < len(argv):
             cfg.ollama_model = argv[i + 1]
         argv = argv[:i] + argv[i + 2:]
-    per_platform = "--per-platform" in argv
-    argv = [a for a in argv if a != "--per-platform"]
     if not argv:
         print("usage: python -m studio.prepare <video> [--model NAME] "
-              "[--niche TEXT] [--per-platform]")
+              "[--niche TEXT]")
         return 2
-    return prepare(argv[0], cfg, niche=niche, per_platform=per_platform)
+    return prepare(argv[0], cfg, niche=niche)
 
 
 if __name__ == "__main__":

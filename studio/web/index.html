@@ -1,174 +1,198 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0a0b0f" />
-  <title>Shorts Studio</title>
-  <link rel="stylesheet" href="/static/style.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B0D10">
+<title>Shorts Studio</title>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <!-- LOGIN OVERLAY -->
-  <div id="login" class="overlay hidden">
-    <div class="login-card">
-      <div class="brand-big">🎬 <span>Shorts Studio</span></div>
-      <p class="muted">Self-hosted · on your PC</p>
-      <input id="password" type="password" placeholder="App password" autocomplete="current-password" />
-      <button id="loginBtn" class="btn primary block">Unlock</button>
-      <p id="loginErr" class="err"></p>
+
+<!-- login overlay -->
+<div id="login" class="login hidden">
+  <div class="login-card">
+    <div class="brand big">
+      <svg viewBox="0 0 24 24" class="logo"><path d="M8 5.5v13l11-6.5z"/></svg>
+      <span>Shorts <b>Studio</b></span>
+    </div>
+    <p class="muted">Enter the app password to continue.</p>
+    <form id="login-form">
+      <input id="login-pass" type="password" placeholder="App password"
+             autocomplete="current-password" required>
+      <button class="btn primary" type="submit">Unlock</button>
+      <div id="login-err" class="err-line"></div>
+    </form>
+  </div>
+</div>
+
+<!-- topbar -->
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" class="logo"><path d="M8 5.5v13l11-6.5z"/></svg>
+    <span>Shorts <b>Studio</b></span>
+  </div>
+  <div id="model-pill" class="pill"><span class="dot"></span><span id="model-name">…</span></div>
+</header>
+
+<div id="pass-banner" class="banner hidden">
+  ⚠️ app_password is still the default — change it in studio.yaml on the PC.
+</div>
+
+<main>
+
+<!-- ======================= CREATE ======================= -->
+<section data-screen="create" class="screen">
+  <div id="active-batches"></div>
+
+  <div class="card hero">
+    <h2>Turn a video into Shorts</h2>
+    <div class="seg" id="src-seg">
+      <button data-src="url" class="on">Link</button>
+      <button data-src="upload">Upload</button>
+      <button data-src="local">Library</button>
+    </div>
+
+    <div id="src-url" class="src-pane">
+      <input id="gen-url" type="url" inputmode="url"
+             placeholder="Paste a YouTube link…">
+    </div>
+    <div id="src-upload" class="src-pane hidden">
+      <label class="filebtn">
+        <input id="gen-file" type="file" accept="video/*">
+        <span id="gen-file-label">Choose a video…</span>
+      </label>
+    </div>
+    <div id="src-local" class="src-pane hidden">
+      <select id="gen-local"></select>
+    </div>
+
+    <details class="options">
+      <summary>Options</summary>
+      <div class="opt-grid">
+        <label>Shorts <span class="hint">(max)</span>
+          <div class="stepper">
+            <button type="button" data-step="-1">−</button>
+            <input id="gen-count" type="number" min="1" max="10" value="3">
+            <button type="button" data-step="1">+</button>
+          </div>
+        </label>
+        <label>Min seconds
+          <input id="gen-min" type="number" min="15" max="180" step="5">
+        </label>
+        <label>Max seconds
+          <input id="gen-max" type="number" min="15" max="180" step="5">
+        </label>
+        <label>Niche <span class="hint">(optional)</span>
+          <input id="gen-niche" type="text" dir="auto" placeholder="e.g. قصص تاريخية">
+        </label>
+      </div>
+    </details>
+
+    <button id="gen-btn" class="btn primary big-btn">
+      <svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg>
+      Generate Shorts
+    </button>
+    <div id="gen-err" class="err-line"></div>
+  </div>
+
+  <div class="card">
+    <h3>Download only</h3>
+    <p class="muted small">Save a long video to the library without cutting it yet.</p>
+    <div class="row">
+      <input id="dl-url" type="url" inputmode="url" placeholder="YouTube link…">
+      <button id="dl-btn" class="btn">Download</button>
+    </div>
+    <div id="dl-progress"></div>
+  </div>
+
+  <div class="card">
+    <div class="row spread">
+      <h3>Library</h3>
+      <button id="lib-refresh" class="btn ghost small">Refresh</button>
+    </div>
+    <div id="library" class="list"></div>
+  </div>
+</section>
+
+<!-- ======================= SHORTS ======================= -->
+<section data-screen="shorts" class="screen hidden">
+  <div id="shorts-list"></div>
+  <div id="shorts-empty" class="empty hidden">
+    <svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg>
+    <p>No shorts yet — paste a link on the Create tab.</p>
+  </div>
+  <div id="upload-all-bar" class="upload-all hidden">
+    <button id="upload-all-btn" class="btn primary"></button>
+  </div>
+</section>
+
+<!-- ======================= SETTINGS ======================= -->
+<section data-screen="settings" class="screen hidden">
+  <div class="card">
+    <h3>AI model</h3>
+    <div class="opt-grid">
+      <label>Provider
+        <select id="m-provider"></select>
+      </label>
+      <label>Model
+        <select id="m-model"></select>
+      </label>
+      <label>Custom model id <span class="hint">(optional)</span>
+        <input id="m-custom" type="text" placeholder="overrides the list">
+      </label>
+      <label id="m-key-row" class="hidden">API key
+        <input id="m-key" type="password" placeholder="write-only">
+      </label>
+    </div>
+    <div class="row">
+      <button id="m-apply" class="btn primary">Apply</button>
+      <button id="m-test" class="btn">Test</button>
+      <span id="m-status" class="muted small"></span>
     </div>
   </div>
 
-  <div class="app hidden" id="app">
-    <!-- TOP BAR -->
-    <header class="topbar">
-      <div class="brand">🎬 <span>Shorts Studio</span></div>
-      <div id="statuschip" class="chip"></div>
-    </header>
-
-    <main class="content">
-      <!-- ============ DOWNLOAD ============ -->
-      <section class="screen" data-screen="download">
-        <h1 class="screen-title">Download</h1>
-        <p class="screen-sub">Grab a long video from YouTube — saved to your library.</p>
-
-        <div class="panel">
-          <label class="lbl">Video URL</label>
-          <div class="inline">
-            <input id="dlUrl" type="text" inputmode="url" placeholder="https://youtube.com/watch?v=…" />
-            <button id="dlBtn" class="btn primary">Download</button>
-          </div>
-          <div id="dlProgress" class="dl-progress hidden">
-            <div class="bar"><div class="bar-fill" id="dlBar"></div></div>
-            <span id="dlStage" class="muted small"></span>
-          </div>
-          <p id="dlErr" class="err"></p>
-        </div>
-
-        <div class="section-head"><h2>Your videos</h2><button id="dlRefresh" class="btn ghost tiny">↻</button></div>
-        <div id="videoList" class="list"></div>
-      </section>
-
-      <!-- ============ CREATE ============ -->
-      <section class="screen hidden" data-screen="create">
-        <h1 class="screen-title">Make shorts</h1>
-        <p class="screen-sub">Cut a long video into ready-to-post vertical shorts.</p>
-
-        <div class="panel">
-          <label class="lbl">Source</label>
-          <div class="segmented" id="srcSeg">
-            <button class="seg-btn active" data-src="local">💾 From PC</button>
-            <button class="seg-btn" data-src="upload">📤 Upload</button>
-            <button class="seg-btn" data-src="url">▶️ YouTube</button>
-          </div>
-
-          <div class="srcpane" data-pane="local">
-            <select id="localPick" class="select"></select>
-          </div>
-          <div class="srcpane hidden" data-pane="upload">
-            <label class="filepick" id="filepick">
-              <input id="file" type="file" accept="video/*" />
-              <span id="fileLabel"><b>Tap to choose</b><br><span class="muted small">a long video from your phone</span></span>
-            </label>
-          </div>
-          <div class="srcpane hidden" data-pane="url">
-            <input id="srcUrl" type="text" inputmode="url" placeholder="https://youtube.com/watch?v=…" />
-          </div>
-
-          <div class="grid2">
-            <div>
-              <label class="lbl">Shorts</label>
-              <div class="stepper">
-                <button class="step" id="cMinus">−</button>
-                <input id="count" type="number" min="1" max="20" value="3" />
-                <button class="step" id="cPlus">+</button>
-              </div>
-            </div>
-            <div>
-              <label class="lbl">Niche <span class="muted small">(optional)</span></label>
-              <input id="niche" type="text" placeholder="e.g. geopolitics" />
-            </div>
-          </div>
-
-          <div class="grid2">
-            <div>
-              <label class="lbl">Min length <span class="muted small">(sec)</span></label>
-              <input id="lenMin" type="number" min="5" max="180" value="50" />
-            </div>
-            <div>
-              <label class="lbl">Max length <span class="muted small">(sec)</span></label>
-              <input id="lenMax" type="number" min="5" max="180" value="60" />
-            </div>
-          </div>
-
-          <button id="genBtn" class="btn primary block">✂️ Generate shorts</button>
-          <div id="genProgress" class="dl-progress hidden">
-            <div class="spinner"></div><span id="genStage" class="muted small">starting…</span>
-          </div>
-          <p id="genErr" class="err"></p>
-        </div>
-
-        <div id="createList" class="shorts-grid"></div>
-      </section>
-
-      <!-- ============ CONNECTIONS ============ -->
-      <section class="screen hidden" data-screen="connections">
-        <h1 class="screen-title">Connections</h1>
-        <p class="screen-sub">How each platform logs in, and whether it's healthy.</p>
-        <div id="pwBanner" class="banner hidden">⚠️ Your app password is still the default — change <code>app_password</code> in studio.yaml.</div>
-
-        <div class="panel">
-          <div class="section-head" style="margin-top:0"><h2>Server health</h2><button id="healthRefresh" class="btn ghost tiny">↻</button></div>
-          <div id="healthChecks" class="list"></div>
-        </div>
-
-        <div class="panel" style="margin-top:14px">
-          <div class="section-head" style="margin-top:0"><h2>AI model</h2><span id="modelChip" class="cc"></span></div>
-          <p class="muted small">The model that writes captions and picks the highlights. Local Ollama is free; cloud providers need an API key.</p>
-          <label class="lbl">Provider</label>
-          <select id="provSel" class="select">
-            <option value="ollama">🖥️ Ollama (local, free)</option>
-            <option value="openai">⚡ OpenAI (ChatGPT)</option>
-            <option value="anthropic">🧠 Anthropic (Claude)</option>
-            <option value="gemini">✦ Google Gemini</option>
-          </select>
-          <div id="keyRow" class="hidden" style="margin-top:12px">
-            <label class="lbl">API key <span id="keyState" class="muted small"></span></label>
-            <div class="inline"><input id="apiKey" type="password" placeholder="paste API key"><button id="keySave" class="btn ghost">Save</button></div>
-          </div>
-          <label class="lbl" style="margin-top:12px">Model</label>
-          <select id="modelSel" class="select"></select>
-          <input id="modelCustom" type="text" class="hidden" placeholder="custom model id" style="margin-top:8px" />
-          <div class="row" style="margin-top:14px">
-            <button id="modelTest" class="btn ghost">🧪 Test</button>
-            <button id="modelSave" class="btn primary">Use this model</button>
-          </div>
-          <p id="modelMsg" class="status-line"></p>
-        </div>
-
-        <div class="section-head"><h2>Platforms</h2></div>
-        <div id="connList" class="list"></div>
-      </section>
-
-      <!-- ============ SHORTS LIBRARY ============ -->
-      <section class="screen hidden" data-screen="shorts">
-        <h1 class="screen-title">Shorts</h1>
-        <p class="screen-sub">Review and publish. Published shorts move to <code>uploaded/</code>.</p>
-        <div class="section-head"><h2 id="shortsCount">All shorts</h2><button id="shRefresh" class="btn ghost tiny">↻</button></div>
-        <div id="shortsList" class="shorts-grid"></div>
-      </section>
-    </main>
-
-    <!-- BOTTOM NAV (becomes left rail on desktop) -->
-    <nav class="tabbar">
-      <button class="tab active" data-go="download"><span class="ti">📥</span><span>Download</span></button>
-      <button class="tab" data-go="create"><span class="ti">✂️</span><span>Create</span></button>
-      <button class="tab" data-go="shorts"><span class="ti">🎬</span><span>Shorts</span></button>
-      <button class="tab" data-go="connections"><span class="ti">🔌</span><span>Connect</span></button>
-    </nav>
+  <div class="card">
+    <h3>YouTube</h3>
+    <div id="yt-status" class="list"></div>
+    <div class="row">
+      <button id="yt-check" class="btn">Check connection</button>
+      <span id="yt-check-out" class="muted small"></span>
+    </div>
+    <p class="muted small">Authorize / re-authorize on the PC:
+      <code>python -m studio.login_setup</code></p>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js"></script>
+  <div class="card">
+    <h3>Server health</h3>
+    <div id="health-list" class="list"></div>
+    <button id="health-refresh" class="btn ghost small">Re-check</button>
+  </div>
+
+  <div class="card">
+    <button id="logout" class="btn danger">Log out</button>
+  </div>
+</section>
+
+</main>
+
+<!-- bottom tab bar -->
+<nav class="tabbar">
+  <button data-tab="create" class="on">
+    <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke-width="2.4" stroke-linecap="round" fill="none" stroke="currentColor"/></svg>
+    <span>Create</span>
+  </button>
+  <button data-tab="shorts">
+    <svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M11 9.5v5l4-2.5z" fill="currentColor"/></svg>
+    <span>Shorts</span><em id="tab-badge" class="badge hidden"></em>
+  </button>
+  <button data-tab="settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+    <span>Settings</span>
+  </button>
+</nav>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js" defer></script>
 </body>
 </html>

@@ -1,66 +1,42 @@
-"""One-time login capture for each platform.
+"""One-time YouTube authorization.
 
-Run once per platform on the host PC (with a screen attached) so the publishers
-can reuse the saved session later, headlessly, from your phone:
+Run once on the host PC (with a screen attached) so uploads can run headlessly
+from your phone afterwards:
 
-    python -m studio.login_setup all          # do every platform
-    python -m studio.login_setup instagram    # or one at a time
-    python -m studio.login_setup youtube       # runs the YouTube OAuth flow
+    python -m studio.login_setup
 
-For instagram / tiktok / facebook a browser window opens: log in normally
-(including 2FA), then close the window. For youtube a browser opens Google's
-OAuth consent screen and the refresh token is cached.
+A browser opens Google's OAuth consent screen; the refresh token is cached to
+``youtube_token`` (see studio.yaml). Re-run this whenever the app asks for a
+re-auth (e.g. after the thumbnail permission was added to the requested scopes).
 """
 
 from __future__ import annotations
 
 import sys
 
-from .config import PLATFORMS, StudioConfig
-
-_START_URLS = {
-    "instagram": "https://www.instagram.com/accounts/login/",
-    "tiktok": "https://www.tiktok.com/login",
-    "facebook": "https://www.facebook.com/login",
-}
+from .config import StudioConfig
 
 
-def login(platform: str, cfg: StudioConfig) -> bool:
-    platform = platform.lower()
-    if platform == "youtube":
-        from .publishers.youtube import YouTubePublisher
+def login(cfg: StudioConfig) -> bool:
+    from .publishers.youtube import YouTubePublisher
 
-        try:
-            YouTubePublisher(cfg).authorize(interactive=True)
-            print("[youtube] authorized ✓")
-            return True
-        except Exception as exc:
-            print(f"[youtube] failed: {exc}")
-            return False
-
-    if platform not in _START_URLS:
-        print(f"unknown platform: {platform}")
+    try:
+        YouTubePublisher(cfg).authorize(interactive=True)
+        print("[youtube] authorized ✓")
+        return True
+    except Exception as exc:
+        print(f"[youtube] failed: {exc}")
         return False
-
-    from .publishers.playwright_base import capture_login
-
-    return capture_login(cfg.session_dir_for(platform), _START_URLS[platform],
-                         platform)
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
-    if not argv:
+    if argv and argv[0] in {"-h", "--help"}:
         print(__doc__)
-        print("platforms:", ", ".join(PLATFORMS))
-        return 2
+        return 0
     cfg = StudioConfig.load()
     cfg.ensure_dirs()
-    targets = list(PLATFORMS) if argv[0] == "all" else argv
-    ok = True
-    for p in targets:
-        ok = login(p, cfg) and ok
-    return 0 if ok else 1
+    return 0 if login(cfg) else 1
 
 
 if __name__ == "__main__":

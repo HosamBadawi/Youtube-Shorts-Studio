@@ -27,14 +27,20 @@ dev = ["pytest>=8.0"]
 # programmatically (no YAML config / no CLI) and supply ReframeParams directly.
 # pydantic + pyyaml are then unnecessary because config.py is never imported.
 core = ["numpy>=1.26,<3", "opencv-contrib-python>=4.9", "mediapipe>=0.10.9"]
-# Daily Shorts Studio: phone web app + Ollama/Whisper + multi-platform publish.
+# YouTube Shorts Studio: phone web app + Ollama/Whisper + YouTube upload.
 # See requirements-studio.txt / STUDIO_README.md.
 studio = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
     "faster-whisper>=1.0",
-    "playwright>=1.42",
+    "Pillow>=10.0",
+    "arabic-reshaper>=3.0",
+    "python-bidi>=0.4",
+    "rembg>=2.0.60",
+    "onnxruntime>=1.17",
+    "rapidfuzz>=3.0",
+    "yt-dlp>=2024.0",
     "google-api-python-client>=2.100",
     "google-auth-oauthlib>=1.2",
     "google-auth-httplib2>=0.2",
@@ -42,13 +48,14 @@ studio = [
 
 [project.scripts]
 adaptive-reframe = "adaptive_reframe.cli:main"
-daily-shorts-studio = "studio.__main__:main"
+youtube-shorts-studio = "studio.__main__:main"
 
 [tool.setuptools]
-packages = ["adaptive_reframe", "studio", "studio.publishers"]
+packages = ["adaptive_reframe", "studio", "studio.publishers",
+            "studio.thumbnails"]
 
 [tool.setuptools.package-data]
-studio = ["web/*"]
+studio = ["web/*", "assets/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

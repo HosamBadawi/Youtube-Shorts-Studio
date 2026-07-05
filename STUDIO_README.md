@@ -1,25 +1,39 @@
-# Daily Shorts Studio
+# YouTube Shorts Studio
 
-Self-hosted daily Shorts publisher. Host it on your home PC (your RTX 3060 Ti),
+Self-hosted YouTube Shorts factory. Host it on your home PC (your RTX 3060 Ti),
 open a phone-friendly page from anywhere through a **free Cloudflare tunnel**,
-upload today's clip, and it will:
+paste a long YouTube link, and it will:
 
-1. **Transcribe** the audio (Whisper, GPU-accelerated).
-2. **Pick the best segment** with your **local Ollama** model (only if the source
-   is long) and trim to it.
-3. **Reframe to vertical 9:16** using the built-in `adaptive_reframe` engine.
-4. **Draft a title / caption / hashtags** with Ollama — which you can **edit or
-   write yourself** in the form.
-5. **Publish** to **YouTube Shorts, Instagram, TikTok, and Facebook** with one tap.
+1. **Download** the video (yt-dlp, aria2c-accelerated).
+2. **Transcribe** it (Whisper large-v3, GPU) with word timestamps.
+3. **Find the best moments** with your **local Ollama** model — every short is
+   one complete idea that starts on a hook and ends after the payoff, snapped
+   to sentence boundaries. Sponsor reads / intros / outros are masked
+   (SponsorBlock + LLM classification) and never end up in a short.
+4. **Cut the silences** so shorts feel fast (jump cuts + a subtle alternating
+   punch-in zoom), keeping the karaoke captions perfectly in sync.
+5. **Reframe to vertical 9:16** with the built-in face-tracking
+   `adaptive_reframe` engine and **burn Egyptian-Arabic karaoke captions**.
+6. **Add a subscribe reminder** mid-short — an animated اشترك button with a
+   bell ding, generated programmatically (no stock footage).
+7. **Write the copy**: an Arabic title (curiosity + result formula), a YouTube
+   description, topic hashtags, and a 3-6 word thumbnail headline.
+8. **Compose a thumbnail**: the best face frame is auto-picked and cut out
+   (the presenter's real pixels — never an AI face), placed on a bold
+   background with the huge Arabic headline.
+9. **Review on your phone**: edit the title/description, regenerate the
+   thumbnail, pick a different frame — then **upload to YouTube** with one tap
+   (official Data API; ~100 uploads/day on the free quota).
 
-It's free end-to-end: YouTube uses the official (free) Data API; Instagram,
-TikTok and Facebook use Playwright browser automation against your saved logins;
-remote access is a free Cloudflare quick tunnel; the AI runs locally in Ollama.
+It's free end-to-end: the AI runs locally in Ollama, YouTube uses the official
+(free) Data API, and remote access is a free Cloudflare quick tunnel.
 
 ```
-phone ──https──> Cloudflare tunnel ──> FastAPI (studio/) ──> adaptive_reframe (9:16)
-                                              │                Whisper + Ollama (local)
-                                              └──> publishers: YouTube API · IG/TikTok/FB (Playwright)
+phone ──https──> Cloudflare tunnel ──> FastAPI (studio/)
+                                          │  Whisper + Ollama + rembg (local)
+                                          │  segmenter → montage → reframe →
+                                          │  captions → subscribe → thumbnail
+                                          └──> YouTube Data API v3 (official)
 ```
 
 ---
@@ -27,10 +41,10 @@ phone ──https──> Cloudflare tunnel ──> FastAPI (studio/) ──> ada
 ## 1. Prerequisites (on the host PC)
 
 - **Python 3.11+**
-- **ffmpeg + ffprobe** on PATH — https://www.gyan.dev/ffmpeg/builds/ (Windows) or `winget install Gyan.FFmpeg`
-- **Ollama** — https://ollama.com → then pull a model:
+- **ffmpeg + ffprobe** on PATH — https://www.gyan.dev/ffmpeg/builds/ or `winget install Gyan.FFmpeg`
+- **Ollama** — https://ollama.com → pull a model that fits an 8 GB card:
   ```powershell
-  ollama pull llama3.1
+  ollama pull qwen2.5:7b
   ```
 - **cloudflared** — https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
   (drop `cloudflared.exe` on your PATH). Free, no account needed for quick mode.
@@ -38,14 +52,14 @@ phone ──https──> Cloudflare tunnel ──> FastAPI (studio/) ──> ada
 ## 2. Install
 
 ```powershell
-cd daily-shorts-studio   # the folder you cloned into
+cd YoutubeShortsStudio
 python -m venv .venv ; .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r requirements-studio.txt
-python -m playwright install chromium
 ```
 
-> The reframe engine needs `opencv-contrib-python` (already in `requirements.txt`)
-> and works on GPU for Whisper if you have CUDA/PyTorch installed.
+> The first thumbnail run downloads the background-removal model (~1 GB,
+> one time). The reframe engine needs `opencv-contrib-python` (in
+> `requirements.txt`); Whisper uses CUDA automatically when available.
 
 ## 3. Configure
 
@@ -53,26 +67,21 @@ python -m playwright install chromium
 copy studio.example.yaml studio.yaml
 ```
 
-Edit `studio.yaml` and **change `app_password`** — the app is reachable from the
-public internet through the tunnel, so this password is your gate.
+Edit `studio.yaml` and **change `app_password`** — the app is reachable from
+the public internet through the tunnel, so this password is your gate.
 
-## 4. One-time platform logins
+## 4. One-time YouTube authorization
 
-Run on the PC **with a screen** so the browser/consent windows can open:
+1. https://console.cloud.google.com → new project → enable **YouTube Data API v3**.
+2. *APIs & Services → Credentials → Create credentials → OAuth client ID →
+   Application type: Desktop app*. Download the JSON.
+3. Save it to `secrets/youtube_client_secret.json` (path is configurable).
+4. `python -m studio.login_setup` opens Google's consent screen once; the
+   refresh token is cached to `secrets/youtube_token.json`.
 
-```powershell
-python -m studio.login_setup all
-```
-
-- **Instagram / TikTok / Facebook**: a browser opens — log in (handle 2FA), then
-  just **close the window**. The session is saved under `workspace/sessions/`.
-- **YouTube**: needs a free Google Cloud OAuth client first:
-  1. https://console.cloud.google.com → new project → enable **YouTube Data API v3**.
-  2. *APIs & Services → Credentials → Create credentials → OAuth client ID →
-     Application type: Desktop app*. Download the JSON.
-  3. Save it to `secrets/youtube_client_secret.json` (path is configurable).
-  4. `python -m studio.login_setup youtube` opens Google's consent screen once;
-     the refresh token is cached to `secrets/youtube_token.json`.
+> Re-run `python -m studio.login_setup` if the app ever reports
+> "re-auth needed" — e.g. after this release, which added the thumbnail
+> permission (`youtube.force-ssl`) to the requested scopes.
 
 ## 5. Run
 
@@ -89,80 +98,62 @@ URL. Open that one on your phone, enter the app password, and you're in.
 
 ---
 
-## Daily flow (from your phone)
+## The flow (from your phone)
 
-1. Tap **choose a video**, pick today's clip.
-2. (Optional) type a niche so the AI copy is on-topic; toggle AI captions on/off.
-3. **Upload & prepare** → watch it transcribe → segment → reframe → caption.
-4. On the **Review** screen: watch the 9:16 preview, edit the title/caption/
-   hashtags (or hit **Regenerate with AI**), tick the platforms.
-5. **Publish now**. Per-platform results (with links) show when done.
+1. **Create** tab → paste a YouTube link (or upload / pick from the library).
+2. Options: how many shorts (a **maximum** — if the AI finds only 3 genuinely
+   strong segments out of 5 requested, you get 3 and it says why), min/max
+   duration, optional niche.
+3. **Generate** → watch the progress bar (download → transcribe → select →
+   per-short render/copy/thumbnail).
+4. **Shorts** tab: per card — video preview next to its thumbnail; edit the
+   title/description/hashtags; *Regenerate* / *Pick frame* / *Headline* to
+   reshape the thumbnail; "Why this clip?" shows the AI's reasoning.
+5. Pick privacy and **Upload to YouTube** (or *Upload all*). Results show a
+   direct link. The generated thumbnail is baked in as the first frame
+   (toggleable via `embed_thumb_first_frame`) and also submitted via the API.
 
-`one_per_day: true` blocks a second publish on the same day — flip it off in
-`studio.yaml` if you want more.
+## Thumbnails on Shorts — what to expect
 
----
+The Shorts **feed** never displays thumbnails (it's full-screen autoplay).
+Thumbnails appear in **search, your channel grid, hashtag pages and suggested
+cards** — that's where the composed thumbnail earns its clicks. The
+first-frame embed guarantees your design is also what frame-selection
+surfaces show; the `thumbnails.set` API call is attempted after every upload
+and its outcome is reported per short (Shorts support for it is
+account-dependent and needs a phone-verified channel).
 
-## How each platform is published
+## CLI tools (no upload, for testing)
 
-| Platform   | Method | Notes |
-|------------|--------|-------|
-| YouTube    | Official Data API v3 | Free quota (~6 uploads/day). `#Shorts` auto-added. |
-| Instagram  | Playwright (web Reels) | Uses saved login. Web "Create" modal flow. |
-| TikTok     | Playwright (tiktok.com/upload) | Uses saved login. |
-| Facebook   | Playwright (facebook.com/reels/create) | Uses saved login. |
-
-The browser publishers click through the real upload UI. When a site changes its
-layout a step may time out — set `playwright_headless: false` in `studio.yaml`,
-re-run, and watch where it stops; the selectors live in
-`studio/publishers/<platform>.py` with fallbacks that are easy to adjust. If a
-session expires you'll see **"login needed"** in the results — just re-run
-`python -m studio.login_setup <platform>`.
-
-## Publishing (the Connections screen)
-
-Each platform logs in through a **fallback chain** (configurable per platform):
-
-1. **Edge profile** — reuse the logins already saved in Microsoft Edge. Set
-   `edge_user_data_dir` to your Edge `User Data` folder. The app **copies** the
-   profile (never touches your live one) and drives the signed Edge binary.
-2. **Saved session** — capture once on the PC with
-   `python -m studio.login_setup <platform>` (handles 2FA in a real window).
-3. **Credentials** — username/password (+ optional TOTP) entered in the
-   Connections screen, stored encrypted. Best-effort; IG/TikTok/FB may still
-   challenge automated logins with CAPTCHA/2FA, in which case the app reports
-   "login needed" rather than looping.
-
-Publishing **retries with backoff**, waits for an on-page confirmation before
-marking success (so a retry won't double-post), saves a screenshot to
-`workspace/failures/` on a failed try, and the **Connect/Check** buttons run a
-health check. YouTube always uses its official API.
+```powershell
+python -m studio.prepare --check          # environment doctor
+python -m studio.prepare video.mp4        # full prep for ONE short, no upload
+python -m studio.shorts video.mp4 --count 3   # cut N shorts to workspace/shorts/
+python -m studio.sample_modes video.mp4   # compare reframe modes side by side
+```
 
 ## Security notes
 
-- **Change `app_password`** — the tunnel makes the app world-reachable. The login
-  gate is rate-limited and uses a per-install random key; set `cookie_secure: true`
-  if you only reach it over the HTTPS tunnel.
-- **Credentials are encrypted at rest** (AES-256-GCM). The key is wrapped with
-  Windows **DPAPI** (so a copied `secrets/` folder is useless on another machine)
-  and, only if you set a **strong** `app_password`/`vault_recovery_password`, also
-  with scrypt for portable recovery. Back up `secrets/dek.scrypt` + that password
-  if you want cross-machine recovery; otherwise creds are bound to this Windows
-  user. The vault auto-disables (no plaintext) if `cryptography` isn't installed.
-- `workspace/` and `secrets/` hold live logins/tokens/cookies (incl. the copied
-  Edge profile) — all gitignored and ACL-locked to your user; never commit/share.
-- The Connections status shows the configured **username** for each platform (so
-  you know which account is set) — it's behind the password gate; treat the gate
-  as the boundary.
-- Prefer `cloudflare_mode: named` + **Cloudflare Access**, or Tailscale, for a
-  stable, lockable URL in front of the tunnel.
+- **Change `app_password`** — the tunnel makes the app world-reachable. The
+  login gate is rate-limited and uses a per-install random key; cookies are
+  Secure whenever the tunnel is on.
+- **Cloud LLM API keys are encrypted at rest** (AES-256-GCM, key wrapped with
+  Windows DPAPI). The YouTube OAuth token file is ACL-locked to your user.
+- `workspace/` and `secrets/` hold tokens and rendered content — gitignored;
+  never commit or share them.
+- Downloads are SSRF-guarded (`download_host_allowlist`, private-IP blocking).
 
 ## Troubleshooting
 
-- **"Ollama offline"** in the status bar → `ollama serve` isn't running or the
-  model isn't pulled. Captions then fall back to manual entry.
-- **No transcript / no AI segment** → `faster-whisper` not installed; the clip is
-  still reframed and published, you just write captions yourself.
-- **Reframe errors** → ensure `opencv-contrib-python` and ffmpeg are installed.
-- **Tunnel URL not shown** → `cloudflared` isn't on PATH; the local URL still works
-  on your LAN.
+- **"Ollama offline"** in the status pill → `ollama serve` isn't running or no
+  model is pulled. Segment selection and copy then fall back gracefully.
+- **Fewer shorts than requested** → that's by design (quality over padding);
+  widen min/max duration or lower the count.
+- **No transcript** → `faster-whisper` not installed or no speech; one default
+  clip is cut and captions are skipped.
+- **Thumbnail has no cutout** → `rembg`/`onnxruntime` missing, or the first
+  model download was interrupted; the composer falls back to a full-frame
+  design automatically.
+- **Upload says re-auth needed** → run `python -m studio.login_setup` on the PC.
+- **Tunnel URL not shown** → `cloudflared` isn't on PATH; the local URL still
+  works on your LAN.

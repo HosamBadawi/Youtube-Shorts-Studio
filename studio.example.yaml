@@ -1,134 +1,107 @@
-# =============================================================================
-# Daily Shorts Studio - configuration
-# Copy to `studio.yaml` and edit. Every key is optional (defaults shown).
-# Any key can also be overridden by an env var: STUDIO_<KEY_UPPERCASE>.
-# =============================================================================
+# YouTube Shorts Studio — configuration.
+# Copy to studio.yaml and edit. Every key is optional; these are the defaults.
+# Env vars override: STUDIO_<KEY>, e.g. STUDIO_OLLAMA_MODEL=qwen2.5:7b
 
-# Where uploads, renders, browser sessions and the database live.
-workspace: ./workspace
-host: 0.0.0.0
+# --- server / access ---------------------------------------------------------
+workspace: "./workspace"
+host: "0.0.0.0"
 port: 8765
+# CHANGE THIS. The tunnel makes the app reachable from the public internet;
+# this password is the gate.
+app_password: "change-me"
+cookie_secure: false
 
-# --- ACCESS CONTROL --------------------------------------------------------
-# The app is reachable from the public internet through the Cloudflare tunnel,
-# so this password is your only gate. CHANGE IT. Set to "" only on a trusted
-# LAN / Tailscale where no gate is needed.
-app_password: change-me
-
-# --- REMOTE ACCESS (Cloudflare) -------------------------------------------
-# quick = free ephemeral https URL (no account; URL changes each run)
-# named = stable URL via a tunnel token from the Zero Trust dashboard
-# off   = bind locally only
-cloudflare_mode: quick
+# --- remote access (open the app on your phone) -------------------------------
+# quick = free ephemeral trycloudflare.com URL (changes each run)
+# named = stable URL via a Cloudflare tunnel token | off = local only
+cloudflare_mode: "quick"
 cloudflare_token: ""
-cloudflared_bin: cloudflared
+cloudflared_bin: "cloudflared"
 
-# --- LOCAL AI (Ollama on this PC) -----------------------------------------
-ollama_url: http://localhost:11434
-ollama_model: auto            # auto = pick the best installed model; or pin one
+# --- local AI ------------------------------------------------------------------
+ollama_url: "http://localhost:11434"
+# "auto" picks the most capable installed model THAT FITS the GPU (~<=6 GB
+# weights). Pin one for consistency, e.g. "qwen2.5:7b".
+ollama_model: "auto"
 ollama_enabled: true
-ollama_think: false           # keep false for qwen3 / deepseek-r1 thinking models
+ollama_think: false
+ollama_timeout: 240
+# Language for titles/descriptions: "auto" follows the video's language.
+metadata_language: "auto"
+# ollama | openai | anthropic | gemini (cloud keys are stored encrypted via the UI)
+llm_provider: "ollama"
+llm_model: ""
 
-# Which AI writes captions / picks highlights. Choose from the web UI (🔌 Connect
-# screen). ollama (local, free) | openai | anthropic | gemini. Cloud API keys are
-# stored ENCRYPTED in the vault via the UI — never put keys in this file.
-llm_provider: ollama
-llm_model: ""                 # provider model id ("" = sensible default)
-ollama_timeout: 240           # raise for big models (35B) that spill to CPU
-metadata_language: auto       # auto = match the video's language; or "Arabic"/"English"
-
-# --- TRANSCRIPTION (Whisper) ----------------------------------------------
-whisper_model: base           # tiny | base | small | medium | large-v3
-whisper_device: auto          # auto | cpu | cuda
+# --- transcription -------------------------------------------------------------
+whisper_model: "large-v3"     # tiny|base|small|medium|large-v3
+whisper_device: "auto"        # auto|cpu|cuda
 whisper_enabled: true
-whisper_language: auto        # force e.g. "ar" for far better Arabic accuracy
+whisper_language: "ar"        # pin for much better accuracy than auto
 
-# --- SHORT SELECTION -------------------------------------------------------
-target_short_seconds: 55         # length the AI aims for when cutting a short
-min_short_seconds: 50            # hard floor: a short is never shorter than this
-max_short_seconds: 60            # hard ceiling: a short is never longer than this
-keep_whole_if_under_seconds: 90  # shorter sources are used as-is (no cutting)
+# --- short selection -------------------------------------------------------------
+target_short_seconds: 55
+min_short_seconds: 50
+max_short_seconds: 60
+keep_whole_if_under_seconds: 90
+# Never start a short before this many seconds / this fraction of the runtime
+# (whichever is larger) — skips intros and greetings.
+intro_skip_seconds: 45
+intro_skip_frac: 0.05
+# MAXIMUM shorts per video. Fewer are produced when fewer strong segments exist.
+shorts_per_video: 3
 
-# --- REFRAMING TECHNIQUE ---------------------------------------------------
-# auto = classify per clip. Or force one for every short:
-#   crop_blur        = subject-tracked crop + blur margins (recommended hybrid)
-#   blur_background  = full scene centered, blurred top/bottom ("blanking")
-#   face_focus       = tight crop on the face, fills the frame (no blanking)
-#   active_speaker | smart_crop | mirror_background | dynamic_canvas | no_crop
-reframe_mode: auto
+# --- semantic segmentation --------------------------------------------------------
+# Ask SponsorBlock (crowd-sourced) which parts are sponsor/intro/outro.
+sponsorblock_enabled: true
+segment_window_sentences: 32
+segment_overlap_sentences: 8
 
-# --- BURNED-IN CAPTIONS (TikTok style) -------------------------------------
+# --- montage (silence cutting) ------------------------------------------------------
+silence_cut_enabled: true
+silence_min_gap: 0.45         # gaps longer than this are removed...
+silence_pad: 0.12             # ...keeping this much air around speech
+montage_zoom: true            # subtle punch-in alternating between jump cuts
+montage_zoom_factor: 1.06
+
+# --- subscribe reminder (burned into every short) --------------------------------------
+subscribe_overlay_enabled: true
+subscribe_at_frac: 0.4        # appears at 40% of the short
+subscribe_duration: 3.0
+subscribe_sound: true         # soft bell ding
+subscribe_text: "اشترك"
+subscribed_text: "تم الاشتراك"
+
+# --- thumbnails ------------------------------------------------------------------------
+thumbs_enabled: true
+thumb_template: "auto"        # auto | blur | burst | flat
+thumb_use_gpu: false          # keep the 8 GB card free; CPU takes seconds
+
+# --- downloading -------------------------------------------------------------------------
+download_prefer_mp4: true
+download_host_allowlist: ["youtube.com", "youtu.be"]
+
+# --- rendering ------------------------------------------------------------------------------
+reframe_mode: "auto"          # or force: crop_blur | blur_background | face_focus | ...
 captions_enabled: true
-caption_font: Arial              # any installed font (needs Arabic glyphs for AR)
+caption_font: "Arial"
 caption_fontsize: 96
-caption_highlight: "#FFE000"     # color of the word currently being spoken
+caption_highlight: "#FFE000"
 caption_base_color: "#FFFFFF"
-caption_position: lower          # lower | center | bottom
-caption_max_words: 4             # how many words show on screen at once
+caption_position: "lower"
+caption_max_words: 4
 
-# --- INPUT / LIBRARY -------------------------------------------------------
-# Folder the web app's "On PC" tab browses for local source videos.
-# Leave blank to use workspace/downloads. Point it at your video folder.
-media_library: ""
-download_prefer_mp4: true     # download YouTube sources as mp4
-# SSRF guard: only these hosts (+ their subdomains) may be downloaded from.
-# Empty = any PUBLIC host (still blocks private/loopback/link-local/CGNAT).
-# Add e.g. vimeo.com if you download from elsewhere.
-download_host_allowlist: [youtube.com, youtu.be]
+# --- uploading to YouTube ---------------------------------------------------------------------
+one_per_day: false            # the 2026 API quota allows ~100 uploads/day
+move_uploaded_on_success: true
+# Bake the thumbnail in as the first ~0.1s — the only Shorts-thumbnail
+# mechanism that works on every account (the API thumbnail is also attempted).
+embed_thumb_first_frame: true
+youtube_client_secret: "./secrets/youtube_client_secret.json"
+youtube_token: "./secrets/youtube_token.json"
+youtube_privacy: "public"     # default; overridable per short in the UI
+youtube_category_id: "22"
 
-# --- PUBLISHING ------------------------------------------------------------
-enabled_platforms: [youtube, instagram, tiktok, facebook]
-one_per_day: false            # true = block a 2nd publish on the same day
-playwright_headless: true     # false = watch the browser automation run
-
-# Reliability (IG/TikTok/FB browser automation):
-publish_max_attempts: 3       # retries per platform (set 1 to avoid any re-post risk)
-publish_backoff_base: 2.0
-publish_backoff_max: 30.0
-screenshot_on_failure: true   # save a screenshot under workspace/failures/ on a fail
-health_check_timeout: 45.0
-# How long to wait for the video upload to FINISH before reporting success — the
-# final Share/Post starts the real upload, which on a slow line takes minutes.
-# Raise this if your upload is very slow.
-publish_upload_timeout: 1200  # seconds (20 min)
-move_uploaded_on_success: true  # move the short to workspace/uploaded/ when all ok
-
-# Post Facebook Reels to a PAGE (not your personal profile): set the Page URL.
-# Blank = personal profile.
-#   facebook_page_url: "https://www.facebook.com/profile.php?id=<page-id>"
-facebook_page_url: ""
-
-# --- OPTIONAL: official Meta Graph API for IG + Facebook Page --------------
-# Reliable alternative to browser automation (no CAPTCHA, real post id). Free for
-# accounts you OWN (Development Mode — no App Review). The Page access token is
-# stored ENCRYPTED in the vault (via the app), NEVER in this file. See STUDIO_README.
-meta_api_enabled: false
-facebook_page_id: ""          # numeric Page id
-instagram_business_id: ""     # IG Business account id linked to the Page
-meta_graph_version: "v21.0"
-
-# How a logged-in browser is obtained. auto = try the whole chain
-#   saved_session -> edge_profile -> credentials_login
-# saved_session (captured via the 🔐 Log in button on the Connections screen, or
-# `python -m studio.login_setup`) is the reliable path. NOTE: reusing your LIVE
-# Edge logins (edge_profile) is unreliable on modern Edge/Chrome — App-Bound
-# Encryption stops automation from decrypting the host profile's cookies, so the
-# automated browser shows up signed-out even though your own Edge is signed in.
-session_strategy: auto
-# session_strategy_overrides: { instagram: saved_session }
-
-# Reuse the logins saved in Microsoft Edge (Windows) — fallback only, see the
-# App-Bound Encryption note above. Point at the Edge "User Data" dir; blank skips.
-#   edge_user_data_dir: "C:/Users/<you>/AppData/Local/Microsoft/Edge/User Data"
-edge_user_data_dir: ""
-edge_profile_dir: "Default"   # which profile (see edge://version)
-
-# Encrypted credential vault (passwords NEVER go in this yaml).
+# --- misc ---------------------------------------------------------------------------------------
+media_library: ""             # "" = workspace/downloads
 vault_db: "./secrets/vault.db"
-# vault_recovery_password: ""  # defaults to app_password for the recovery wrap
-
-# YouTube Data API v3 (the only platform with an official free API).
-youtube_client_secret: ./secrets/youtube_client_secret.json
-youtube_token: ./secrets/youtube_token.json
-youtube_privacy: public       # public | unlisted | private
-youtube_category_id: "22"     # 22 = People & Blogs
+vault_recovery_password: ""

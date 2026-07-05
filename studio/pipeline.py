@@ -1,10 +1,16 @@
-"""Ingest -> process -> publish orchestration.
+"""Ingest -> process -> upload orchestration.
 
-``process_job`` runs the heavy, AI-assisted preparation (transcribe -> pick the
-best segment -> trim -> reframe to 9:16 -> draft metadata) and leaves the job in
-``ready`` for review. ``publish_job`` then pushes the reviewed video to the
-chosen platforms. Both are designed to run on a background worker thread and to
-record their progress on the :class:`Job` so the phone UI can poll it.
+``generate_shorts`` is the main path: download (if URL) -> transcribe -> mask
+junk (SponsorBlock + LLM) -> semantic segment selection (sentence-snapped) ->
+per short: trim -> silence-cut montage -> face-tracked 9:16 reframe -> karaoke
+captions -> subscribe-reminder overlay -> Arabic title/description/headline ->
+composed thumbnail. Each short lands as a READY job for phone review.
+``upload_job`` then pushes a reviewed short to YouTube (optionally baking the
+thumbnail in as the first frame).
+
+Honesty rule: if the AI finds fewer strong self-contained segments than
+requested, fewer shorts are produced and the batch note says so — there is no
+blind fixed-interval padding.
 
 ffmpeg / ffprobe must be on PATH (same requirement as the reframe renderer).
 """
@@ -28,12 +34,16 @@ from .transcribe import transcribe
 
 logger = logging.getLogger(__name__)
 
-# Whisper language codes -> human names for the metadata prompt.
+# Whisper language codes -> human names for the copy prompt.
 _LANG_NAMES = {
     "ar": "Arabic", "en": "English", "fr": "French", "es": "Spanish",
     "de": "German", "tr": "Turkish", "ur": "Urdu", "fa": "Persian",
     "hi": "Hindi", "id": "Indonesian", "ru": "Russian", "pt": "Portuguese",
 }
+
+# YouTube classifies <=180s vertical videos as Shorts; keep headroom for the
+# optional first-frame thumbnail embed (+0.1s).
+_SHORTS_MAX_SECONDS = 179.5
 
 
 class StudioPipeline:
@@ -49,67 +59,206 @@ class StudioPipeline:
         self.llm = make_llm(cfg, vault)
 
     # ======================================================================
-    # PREPARE  (transcribe -> segment -> reframe -> metadata)
+    # MULTI-SHORT  (one long video / URL -> up to N reviewable short Jobs)
+    # ======================================================================
+    def generate_shorts(self, source: str, count: int, niche: str = "",
+                        batch_id: str = "", on_stage=None,
+                        min_s: float | None = None,
+                        max_s: float | None = None) -> list[str]:
+        """Returns the created job ids. Progress goes to the batches table
+        (when ``batch_id`` is set) and to ``on_stage(str)`` (CLI use)."""
+        min_len = min_s if min_s else self.cfg.min_short_seconds
+        max_len = max_s if max_s else self.cfg.max_short_seconds
+        if min_len > max_len:
+            min_len, max_len = max_len, min_len
+        max_len = min(max_len, _SHORTS_MAX_SECONDS)
+        target_len = (self.cfg.target_short_seconds
+                      if (min_s is None and max_s is None)
+                      else (min_len + max_len) / 2.0)
+        from .downloader import download, is_url, next_index
+
+        def stage(s: str, percent: float | None = None,
+                  note: str | None = None) -> None:
+            if batch_id:
+                self.store.batch_update(batch_id, stage=s, percent=percent,
+                                        note=note)
+            if on_stage:
+                try:
+                    on_stage(s)
+                except Exception:
+                    pass
+
+        if self.cfg.ollama_enabled:
+            self.llm.resolve_model()
+
+        video_id = None
+        if is_url(source):
+            from .sponsorblock import extract_video_id
+            video_id = extract_video_id(source)
+            stage("downloading video", 2)
+            idx = next_index(self.cfg.library_path)  # 1.mp4, 2.mp4, …
+            source = download(source, str(self.cfg.library_path),
+                              prefer_mp4=self.cfg.download_prefer_mp4,
+                              name=str(idx),
+                              allowlist=self.cfg.download_host_allowlist)
+        stage("probing", 8)
+        duration = _probe_duration(source)
+
+        stage("transcribing", 12)
+        tr = transcribe(source, self.cfg.whisper_model, self.cfg.whisper_device,
+                        self.cfg.whisper_enabled, self.cfg.whisper_language)
+
+        # --- semantic selection ---------------------------------------------
+        stage("selecting the best moments", 34)
+        floor = self._intro_floor(duration)
+        junk: list[tuple[float, float]] = []
+        if video_id and self.cfg.sponsorblock_enabled:
+            from .sponsorblock import fetch_junk_segments
+            junk = fetch_junk_segments(video_id)
+
+        picks = []
+        note = ""
+        if tr.available:
+            from .segmenter import select_segments
+            picks = select_segments(
+                self.llm, tr, duration, count, min_len, max_len,
+                min_start=floor, junk=junk,
+                window=self.cfg.segment_window_sentences,
+                overlap=self.cfg.segment_overlap_sentences,
+                on_stage=lambda s: stage(s, 36))
+        if not picks:
+            if tr.available and self.llm.available():
+                note = ("no strong self-contained segments found — try wider "
+                        "duration bounds or a different video")
+                stage("done", 100, note=note)
+                return []
+            # No transcript / no LLM: one honest default clip after the intro
+            # floor beats producing nothing at all.
+            from .segmenter import SegmentPick
+            end = min(floor + target_len, duration)
+            picks = [SegmentPick(floor, end, topic="",
+                                 reason="AI selection unavailable — default "
+                                        "window after the intro")]
+            note = "AI selection unavailable — one default clip was cut"
+        elif len(picks) < count:
+            note = (f"found {len(picks)} strong segment(s) out of the "
+                    f"{count} requested — quality over padding")
+        if note:
+            stage("rendering", 40, note=note)
+
+        language = self._metadata_language(tr.language)
+        longstem = Path(source).stem  # e.g. "1" -> shorts "1_1.mp4", "1_2.mp4"…
+
+        job_ids: list[str] = []
+        used_titles: list[str] = []
+        for idx, pick in enumerate(picks, 1):
+            base = 40 + 58 * (idx - 1) / len(picks)
+            job = self.store.create(source, batch_id=batch_id,
+                                    topic=pick.topic, score=pick.score,
+                                    reason=pick.reason)
+            job.duration = duration
+            job.segment = (pick.start, pick.end)
+            job.transcript = " ".join(
+                w.text for w in tr.words
+                if pick.start <= w.start < pick.end)
+            job.status = STATUS_PROCESSING
+            self.store.update(job)
+            try:
+                stage(f"rendering short {idx}/{len(picks)}", base + 8)
+                out = str(self.cfg.shorts_dir / f"{longstem}_{idx}.mp4")
+                if Path(out).exists():   # a previous batch from the same
+                    # source — don't silently overwrite; uniquify with job id
+                    out = str(self.cfg.shorts_dir
+                              / f"{longstem}_{idx}_{job.id[:6]}.mp4")
+                self._render_short(job, source, tr.words, out)
+
+                if self.llm.available():
+                    job.stage = f"short {idx}: writing the copy"
+                    self.store.update(job)
+                    stage(f"short {idx}/{len(picks)}: writing copy", base + 38)
+                    meta = self.llm.generate_copy(
+                        job.transcript or pick.topic, niche, language,
+                        avoid_titles=used_titles)
+                    if meta:
+                        job.meta = meta
+                        used_titles.append(meta.title)
+
+                if self.cfg.thumbs_enabled:
+                    job.stage = f"short {idx}: composing thumbnail"
+                    self.store.update(job)
+                    stage(f"short {idx}/{len(picks)}: thumbnail", base + 48)
+                    self._make_thumbnail(job, source)
+
+                job.status = STATUS_READY
+                job.stage = ""
+            except Exception as exc:  # pragma: no cover - cv2/ffmpeg runtime
+                logger.exception("short %d render failed", idx)
+                job.status = STATUS_ERROR
+                job.error = f"{type(exc).__name__}: {exc}"
+            self.store.update(job)
+            job_ids.append(job.id)
+        stage("done", 100)
+        return job_ids
+
+    # ======================================================================
+    # SINGLE-SHORT  (CLI test path: python -m studio.prepare)
     # ======================================================================
     def process_job(self, job: Job, *, auto_metadata: bool = True,
-                    per_platform: bool = False, niche: str = "") -> Job:
+                    niche: str = "") -> Job:
         try:
             job.status = STATUS_PROCESSING
             job.stage = "probing"
             self.store.update(job)
 
-            # Lock in the Ollama model now (auto-pick the best installed one).
             if self.cfg.ollama_enabled:
                 self.llm.resolve_model()
 
             src = job.source_path
             job.duration = _probe_duration(src)
 
-            # 1. Transcribe ---------------------------------------------------
             job.stage = "transcribing"
             self.store.update(job)
-            tr = transcribe(src, self.cfg.whisper_model, self.cfg.whisper_device,
-                            self.cfg.whisper_enabled, self.cfg.whisper_language)
+            tr = transcribe(src, self.cfg.whisper_model,
+                            self.cfg.whisper_device, self.cfg.whisper_enabled,
+                            self.cfg.whisper_language)
             job.transcript = tr.text
             if tr.note:
                 logger.info("transcription: %s", tr.note)
 
-            # 2. Pick the best segment (only for longer sources) -------------
-            work_path = src
-            if job.duration > self.cfg.keep_whole_if_under_seconds and tr.available:
+            if job.duration > self.cfg.keep_whole_if_under_seconds \
+                    and tr.available:
                 job.stage = "selecting highlight"
                 self.store.update(job)
                 floor = self._intro_floor(job.duration)
                 span = self.llm.pick_segment(
-                    tr.timestamped(), job.duration, self.cfg.target_short_seconds,
+                    tr.timestamped(), job.duration,
+                    self.cfg.target_short_seconds,
                     self.cfg.min_short_seconds, self.cfg.max_short_seconds,
                     min_start=floor)
-                if span is None:  # LLM failed -> default window AFTER the intro
+                if span is None:  # LLM failed -> default window AFTER intro
                     span = (floor, min(floor + self.cfg.target_short_seconds,
                                        job.duration))
                 span = _enforce_bounds(span, self.cfg.min_short_seconds,
-                                       self.cfg.max_short_seconds, job.duration)
+                                       self.cfg.max_short_seconds,
+                                       job.duration)
                 job.segment = span
-                work_path = self._trim(src, job.id, span)
 
-            # 3. Reframe to vertical 9:16 ------------------------------------
-            job.stage = "reframing to 9:16"
-            self.store.update(job)
             out_path = str(self.cfg.rendered_dir / f"{job.id}.mp4")
-            raw_path = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
-            self._reframe(work_path, raw_path)
+            self._render_short(job, src, tr.words, out_path)
 
-            # 3b. Burn TikTok-style captions from the words in this segment ---
-            self._apply_captions(job, tr.words, raw_path, out_path)
-            job.output_path = out_path
-
-            # 4. Draft metadata (unless the user already supplied it) --------
-            if auto_metadata and not job.meta.is_complete():
-                job.stage = "writing captions"
+            if auto_metadata and not job.meta.is_complete() \
+                    and self.llm.available():
+                job.stage = "writing the copy"
                 self.store.update(job)
                 language = self._metadata_language(tr.language)
-                job.meta = self._draft_metadata(job.transcript, per_platform,
-                                                niche, language)
+                meta = self.llm.generate_copy(job.transcript, niche, language)
+                if meta:
+                    job.meta = meta
+
+            if self.cfg.thumbs_enabled:
+                job.stage = "composing thumbnail"
+                self.store.update(job)
+                self._make_thumbnail(job, src)
 
             job.stage = ""
             job.status = STATUS_READY
@@ -123,19 +272,116 @@ class StudioPipeline:
             self.store.update(job)
             return job
 
-    def _draft_metadata(self, transcript: str, per_platform: bool,
-                        niche: str, language: str = "") -> VideoMeta:
-        if not self.llm.available():
-            return VideoMeta(title="", caption="", source="manual", hashtags=[])
-        if per_platform:
-            return self.llm.generate_per_platform(
-                transcript, list(self.cfg.enabled_platforms), niche, language)
-        return (self.llm.generate_metadata(transcript, None, niche, language)
-                or VideoMeta())
+    # ======================================================================
+    # PER-SHORT RENDER CHAIN (trim -> montage -> reframe -> captions -> overlay)
+    # ======================================================================
+    def _render_short(self, job: Job, source: str, words, out_path: str
+                      ) -> None:
+        span = job.segment or (0.0, job.duration or _probe_duration(source))
+        start, end = span
+        seg_path = self._trim(source, job.id, span)
+        local_words = _offset_words(words, start, end)
+        seg_dur = end - start
+
+        try:
+            # 1. silence-cut montage (jump cuts + alternating punch-in) -------
+            if self.cfg.silence_cut_enabled and local_words:
+                from . import montage
+                intervals = montage.speech_intervals(
+                    local_words, seg_dur, self.cfg.silence_min_gap,
+                    self.cfg.silence_pad)
+                if intervals:
+                    job.stage = "cutting silences"
+                    self.store.update(job)
+                    cut_path = str(self.cfg.incoming_dir
+                                   / f"{job.id}_cut.mp4")
+                    try:
+                        seg_dur = montage.cut_video(
+                            seg_path, cut_path, intervals,
+                            zoom_alternate=self.cfg.montage_zoom,
+                            zoom=self.cfg.montage_zoom_factor)
+                        local_words = montage.remap_words(local_words,
+                                                          intervals)
+                        Path(seg_path).unlink(missing_ok=True)
+                        seg_path = cut_path
+                    except Exception:
+                        logger.warning("silence cut failed — using the "
+                                       "uncut clip", exc_info=True)
+                        Path(cut_path).unlink(missing_ok=True)
+
+            # 2. face-tracked 9:16 reframe ------------------------------------
+            job.stage = "reframing to 9:16"
+            self.store.update(job)
+            raw_path = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
+            self._reframe(seg_path, raw_path)
+
+            # 3. karaoke captions ---------------------------------------------
+            captioned = str(self.cfg.rendered_dir / f"{job.id}_cap.mp4")
+            self._apply_captions(job, local_words, raw_path, captioned)
+
+            # 4. subscribe-reminder overlay ------------------------------------
+            final = captioned
+            if self.cfg.subscribe_overlay_enabled:
+                from .subscribe import apply_overlay
+                job.stage = "adding subscribe reminder"
+                self.store.update(job)
+                overlaid = str(self.cfg.rendered_dir / f"{job.id}_sub.mp4")
+                if apply_overlay(self.cfg, captioned, overlaid):
+                    Path(captioned).unlink(missing_ok=True)
+                    final = overlaid
+
+            shutil.move(final, out_path)
+            job.output_path = out_path
+        finally:
+            Path(seg_path).unlink(missing_ok=True)
+
+    def _make_thumbnail(self, job: Job, source: str) -> None:
+        """Compose the thumbnail from the ORIGINAL source frames (full
+        resolution, pre-crop) within the picked span."""
+        try:
+            from .thumbnails import generate_thumbnail
+            span = job.segment or (0.0, job.duration)
+            headline = job.meta.thumbnail_headline or job.topic
+            path = generate_thumbnail(self.cfg, job.id, source, span, headline)
+            if path:
+                job.thumb_path = path
+        except Exception:
+            logger.warning("thumbnail generation failed", exc_info=True)
+
+    def rebuild_thumbnail(self, job_id: str, frame_t: float | None = None,
+                          headline: str | None = None,
+                          template: str | None = None) -> None:
+        """Server-triggered recomposition (runs on the worker thread)."""
+        job = self.store.get(job_id)
+        if not job:
+            return
+        job.stage = "recomposing thumbnail"
+        self.store.update(job)
+        try:
+            from .thumbnails import rebuild_thumbnail
+            path = rebuild_thumbnail(self.cfg, job.id, headline=headline,
+                                     frame_t=frame_t, template=template)
+            if path:
+                job.thumb_path = path
+                if headline is not None:
+                    job.meta.thumbnail_headline = headline
+        except Exception:
+            logger.warning("thumbnail rebuild failed", exc_info=True)
+        job.stage = ""
+        self.store.update(job)
+
+    def regenerate_copy(self, job: Job, niche: str = "") -> VideoMeta:
+        """Redraft title/description/headline for one short (server path)."""
+        language = self._metadata_language("")
+        meta = self.llm.generate_copy(job.transcript, niche, language)
+        if meta:
+            job.meta = meta
+            self.store.update(job)
+        return job.meta
 
     def _metadata_language(self, transcript_lang: str) -> str:
-        """Resolve the post-text language: config override, else the detected
-        spoken language mapped to a human name (empty -> model matches transcript)."""
+        """Resolve the copy language: config override, else the detected
+        spoken language mapped to a name (empty -> model matches transcript)."""
         cfg_lang = (self.cfg.metadata_language or "auto").strip()
         if cfg_lang.lower() not in {"auto", ""}:
             return cfg_lang
@@ -143,55 +389,62 @@ class StudioPipeline:
 
     def _intro_floor(self, duration: float) -> float:
         """Earliest second a short may start — NEVER cut from the long video's
-        intro. The larger of an absolute floor and a fraction of the runtime, but
-        never so large that a full-length clip wouldn't fit after it."""
+        intro. The larger of an absolute floor and a fraction of the runtime,
+        but never so large that a full-length clip wouldn't fit after it."""
         floor = max(float(self.cfg.intro_skip_seconds),
                     float(self.cfg.intro_skip_frac) * float(duration))
         room = max(0.0, float(duration) - float(self.cfg.max_short_seconds))
         return max(0.0, min(floor, room))
 
     # ======================================================================
-    # PUBLISH
+    # UPLOAD (YouTube only)
     # ======================================================================
-    def publish_job(self, job: Job, platforms: list[str],
-                    dry_run: bool = False) -> Job:
+    def upload_job(self, job: Job, *, embed_thumb: bool | None = None) -> Job:
         from .publishers import get_publisher
+        from .publishers.base import PublishResult
 
-        verb = "rehearsing" if dry_run else "publishing"
         job.status = STATUS_PUBLISHING
-        job.stage = verb
+        job.stage = "uploading to YouTube"
         self.store.update(job)
 
-        any_ok = False
-        for platform in platforms:
-            job.stage = f"{verb} {platform}"
+        embed = (self.cfg.embed_thumb_first_frame
+                 if embed_thumb is None else embed_thumb)
+        upload_path = job.output_path
+        temp_embed = ""
+        if embed and job.thumb_path and Path(job.thumb_path).exists():
+            job.stage = "baking thumbnail into the first frame"
             self.store.update(job)
-
-            def on_attempt(p, n, total, _job=job):
-                _job.stage = f"{verb} {p} (try {n}/{total})"
-                self.store.update(_job)
-
             try:
-                pub = get_publisher(platform, self.cfg, self.vault)
-                setattr(pub, "on_attempt", on_attempt)
-                setattr(pub, "dry_run", dry_run)
-                result = pub.publish(job.output_path, job.meta)
-            except Exception as exc:  # pragma: no cover
-                from .publishers.base import PublishResult
-                result = PublishResult.failure(platform, str(exc))
-            job.results[platform] = result.to_dict()
-            any_ok = any_ok or result.ok
-            self.store.update(job)
+                temp_embed = str(self.cfg.rendered_dir
+                                 / f"{job.id}_upload.mp4")
+                _embed_first_frame(job.output_path, job.thumb_path,
+                                   temp_embed)
+                upload_path = temp_embed
+            except Exception:
+                logger.warning("first-frame embed failed — uploading the "
+                               "original", exc_info=True)
+                temp_embed = ""
+                upload_path = job.output_path
 
-        # A rehearsal never counts as a publish: don't mark the day or move files.
-        if not dry_run:
-            if any_ok:
-                self.store.mark_published_today(job.id)
-            # Move to uploaded/ only when EVERY selected platform succeeded, so a
-            # partial failure leaves the file in place to retry the rest.
-            all_ok = bool(platforms) and all(
-                job.results.get(p, {}).get("ok") for p in platforms)
-            if all_ok and self.cfg.move_uploaded_on_success:
+        job.stage = "uploading to YouTube"
+        self.store.update(job)
+        try:
+            pub = get_publisher("youtube", self.cfg, self.vault)
+            result = pub.publish(upload_path, job.meta,
+                                 privacy=job.privacy or None,
+                                 thumb_path=job.thumb_path or None)
+        except Exception as exc:  # pragma: no cover
+            result = PublishResult.failure("youtube", str(exc))
+        finally:
+            if temp_embed:
+                Path(temp_embed).unlink(missing_ok=True)
+
+        job.results["youtube"] = result.to_dict()
+        job.youtube_id = result.video_id
+        job.thumb_api = result.thumb
+        if result.ok:
+            self.store.mark_published_today(job.id)
+            if self.cfg.move_uploaded_on_success:
                 self._move_to_uploaded(job)
         job.status = STATUS_DONE
         job.stage = ""
@@ -199,7 +452,7 @@ class StudioPipeline:
         return job
 
     def _move_to_uploaded(self, job: Job) -> None:
-        """After a short is published, move its file into the uploaded/ folder."""
+        """After a short is uploaded, move its file into the uploaded/ folder."""
         src = Path(job.output_path)
         if not src.exists():
             return
@@ -212,109 +465,6 @@ class StudioPipeline:
             job.output_path = str(dest)
         except OSError as exc:  # pragma: no cover
             logger.warning("could not move %s to uploaded/: %s", src, exc)
-
-    # ======================================================================
-    # MULTI-SHORT  (one long video / URL -> N reviewable short Jobs)
-    # ======================================================================
-    def generate_shorts(self, source: str, count: int, niche: str = "",
-                        batch_id: str = "", on_stage=None,
-                        min_s: float | None = None,
-                        max_s: float | None = None) -> list[str]:
-        """Download (if URL) -> transcribe -> pick ``count`` distinct segments ->
-        render each into its own READY Job (reframe + captions + per-segment
-        metadata). Returns the created job ids. ``on_stage(str)`` reports the
-        pre-render progress so the web UI can show it. ``min_s``/``max_s`` override
-        the configured short-length bounds (target = their midpoint)."""
-        min_len = min_s if min_s else self.cfg.min_short_seconds
-        max_len = max_s if max_s else self.cfg.max_short_seconds
-        if min_len > max_len:
-            min_len, max_len = max_len, min_len
-        target_len = (self.cfg.target_short_seconds if (min_s is None and max_s is None)
-                      else (min_len + max_len) / 2.0)
-        from .downloader import download, is_url, next_index
-
-        def stage(s: str) -> None:
-            if on_stage:
-                try:
-                    on_stage(s)
-                except Exception:
-                    pass
-
-        if self.cfg.ollama_enabled:
-            self.llm.resolve_model()
-
-        if is_url(source):
-            stage("downloading video")
-            idx = next_index(self.cfg.library_path)  # 1.mp4, 2.mp4, …
-            source = download(source, str(self.cfg.library_path),
-                              prefer_mp4=self.cfg.download_prefer_mp4,
-                              name=str(idx),
-                              allowlist=self.cfg.download_host_allowlist)
-        stage("probing")
-        duration = _probe_duration(source)
-
-        stage("transcribing")
-        tr = transcribe(source, self.cfg.whisper_model, self.cfg.whisper_device,
-                        self.cfg.whisper_enabled, self.cfg.whisper_language)
-
-        stage("selecting highlights")
-        segs: list[tuple[float, float, str]] = []
-        floor = self._intro_floor(duration)
-        if tr.available:
-            segs = self.llm.pick_segments(tr.timestamped(), duration, count,
-                                             target_len, min_len, max_len,
-                                             min_start=floor)
-        # GUARANTEE the requested count: the model routinely returns fewer than
-        # asked, which used to collapse to a single short. Top up with evenly-
-        # spread windows after the intro floor so "cut into N" always yields N.
-        segs = _fill_to_count(segs, count, duration, floor, target_len)
-        if not segs:  # empty transcript AND no room (very short source)
-            segs = [(floor, min(floor + target_len, duration), "")]
-        segs = [(*_enforce_bounds((s, e), min_len, max_len, duration), topic)
-                for s, e, topic in segs]
-        language = self._metadata_language(tr.language)
-        longstem = Path(source).stem  # e.g. "1" -> shorts "1_1.mp4", "1_2.mp4"…
-
-        job_ids: list[str] = []
-        for idx, (start, end, topic) in enumerate(segs, 1):
-            job = self.store.create(source, batch_id=batch_id, topic=topic)
-            job.duration = duration
-            job.segment = (start, end)
-            job.transcript = " ".join(w.text for w in tr.words
-                                      if start <= w.start < end)
-            job.status = STATUS_PROCESSING
-            job.stage = f"short {idx}/{len(segs)}: rendering"
-            self.store.update(job)
-            stage(f"rendering short {idx}/{len(segs)}")
-            try:
-                seg_mp4 = self._trim(source, job.id, (start, end))
-                raw = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
-                self._reframe(seg_mp4, raw)
-                out = str(self.cfg.shorts_dir / f"{longstem}_{idx}.mp4")
-                if Path(out).exists():   # a previous batch from the same source —
-                    # don't silently overwrite its short; uniquify with the job id
-                    out = str(self.cfg.shorts_dir
-                              / f"{longstem}_{idx}_{job.id[:6]}.mp4")
-                self._apply_captions(job, tr.words, raw, out)
-                job.output_path = out
-                Path(seg_mp4).unlink(missing_ok=True)
-                if self.llm.available():
-                    job.stage = f"short {idx}: writing caption"
-                    self.store.update(job)
-                    m = self.llm.generate_metadata(job.transcript or topic,
-                                                      None, niche, language)
-                    if m:
-                        job.meta = m
-                job.status = STATUS_READY
-                job.stage = ""
-            except Exception as exc:  # pragma: no cover - cv2/ffmpeg runtime
-                logger.exception("short %d render failed", idx)
-                job.status = STATUS_ERROR
-                job.error = f"{type(exc).__name__}: {exc}"
-            self.store.update(job)
-            job_ids.append(job.id)
-        stage("done")
-        return job_ids
 
     # ======================================================================
     # helpers
@@ -330,9 +480,7 @@ class StudioPipeline:
             "-t", f"{duration:.2f}", "-c:v", "libx264", "-c:a", "aac",
             "-movflags", "+faststart", out,
         ]
-        # Bound the trim: a hung ffmpeg on short #2 must not wedge the whole batch.
-        # On timeout this raises -> caught per-short -> that short errors, the loop
-        # continues with the rest.
+        # Bound the trim: a hung ffmpeg on short #2 must not wedge the batch.
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL,
                        timeout=max(300.0, duration * 6))
@@ -346,15 +494,12 @@ class StudioPipeline:
         force = None if mode in {"auto", ""} else mode
         AdaptiveReframePipeline().reframe(src, out, force_mode=force)
 
-    def _apply_captions(self, job: Job, words, raw_path: str,
+    def _apply_captions(self, job: Job, local_words, raw_path: str,
                         out_path: str) -> None:
-        """Burn captions onto the reframed clip; fall back to raw on any miss."""
-        seg_start = job.segment[0] if job.segment else 0.0
-        seg_end = job.segment[1] if job.segment else (job.duration or 1e9)
-        local = _offset_words(words, seg_start, seg_end)
-
+        """Burn captions onto the reframed clip; fall back to raw on a miss.
+        ``local_words`` are already clip-local (offset + silence-remapped)."""
         burned = False
-        if self.cfg.captions_enabled and local:
+        if self.cfg.captions_enabled and local_words:
             job.stage = "burning captions"
             self.store.update(job)
             style = CaptionStyle(
@@ -365,7 +510,7 @@ class StudioPipeline:
                 position=self.cfg.caption_position,
                 max_words=self.cfg.caption_max_words,
             )
-            burned = burn_captions(raw_path, local, out_path, style,
+            burned = burn_captions(raw_path, local_words, out_path, style,
                                    play_w=self.params_wh()[0],
                                    play_h=self.params_wh()[1])
         if burned:
@@ -380,6 +525,9 @@ class StudioPipeline:
         return p.out_w, p.out_h
 
 
+# ---------------------------------------------------------------------------
+# module-level helpers (also imported by the CLI tools)
+# ---------------------------------------------------------------------------
 def _offset_words(words, seg_start: float, seg_end: float):
     """Keep words inside [seg_start, seg_end) and rebase them to a 0-based
     timeline so they line up with the trimmed clip."""
@@ -399,9 +547,8 @@ def _enforce_bounds(span: tuple[float, float], min_s: float, max_s: float,
                     total: float) -> tuple[float, float]:
     """Clamp the picked span into [min_s, max_s] seconds within the source.
 
-    Over-long spans are trimmed from the end (keeping the chosen hook); too-short
-    spans are extended, pulling the start back only if the end hits the source
-    end. If the whole source is shorter than ``min_s``, the whole thing is used.
+    Only the single-short CLI path still needs this numeric clamp — the
+    semantic segmenter snaps to sentence boundaries instead.
     """
     if total <= min_s:
         return (0.0, total)
@@ -418,32 +565,41 @@ def _enforce_bounds(span: tuple[float, float], min_s: float, max_s: float,
     return (start, end)
 
 
-def _fill_to_count(segs, count, duration, floor, target_len):
-    """Guarantee up to ``count`` non-overlapping segments. Keep the model's picks
-    (good hooks) and top up the rest with evenly-spread windows AFTER the intro
-    floor. The LLM routinely returns fewer than asked (slow 35B / truncated JSON /
-    dedup); without this, "cut into N shorts" silently produced just the first."""
-    out = [(float(s), float(e), t) for s, e, t in segs
-           if float(e) - float(s) >= 3.0]
-    out.sort(key=lambda x: x[0])
+def _embed_first_frame(video: str, thumb_jpg: str, out: str) -> None:
+    """Prepend the thumbnail as the first ~0.1s of the video (the only
+    Shorts-thumbnail mechanism that works on every account). One re-encode
+    pass; audio start is padded with 100ms of silence via adelay."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams",
+         "-show_format", video],
+        capture_output=True, text=True, check=True, timeout=60)
+    data = json.loads(probe.stdout)
+    duration = float(data.get("format", {}).get("duration", 0.0))
+    if duration + 0.1 > 180.0:
+        raise RuntimeError("no headroom to embed a frame (>= 180s)")
+    width = height = 0
+    fps = "30"
+    has_audio = False
+    for s in data.get("streams", []):
+        if s.get("codec_type") == "video" and not width:
+            width, height = int(s.get("width", 0)), int(s.get("height", 0))
+            fps = s.get("r_frame_rate", "30/1")
+        elif s.get("codec_type") == "audio":
+            has_audio = True
 
-    def free(a, b):
-        return all(b <= s or a >= e for s, e, _ in out)
-
-    if len(out) < count:
-        usable = max(0.0, float(duration) - float(floor) - float(target_len))
-        step = usable / max(1, count)
-        # evenly-spaced starts, then half-step offsets, to fill gaps between picks
-        starts = [floor + step * k for k in range(count)]
-        starts += [floor + step * (k + 0.5) for k in range(count)]
-        for start in starts:
-            if len(out) >= count:
-                break
-            end = min(start + target_len, duration)
-            if end - start >= 3.0 and free(start, end):
-                out.append((start, end, ""))
-                out.sort(key=lambda x: x[0])
-    return out[:count]
+    fc = (f"[0:v]scale={width}:{height},setsar=1,fps={fps}[intro];"
+          f"[intro][1:v]concat=n=2:v=1:a=0[v]")
+    if has_audio:
+        fc += ";[1:a]adelay=100|100[a]"
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-t", "0.1", "-i", thumb_jpg,
+           "-i", video, "-filter_complex", fc, "-map", "[v]"]
+    if has_audio:
+        cmd += ["-map", "[a]", "-c:a", "aac"]
+    cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-movflags", "+faststart", out]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL,
+                   timeout=max(300.0, duration * 8))
 
 
 def _probe_duration(path: str) -> float:

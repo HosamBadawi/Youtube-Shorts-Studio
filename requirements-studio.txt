@@ -1,8 +1,7 @@
 # ---------------------------------------------------------------------------
-# Daily Shorts Studio - dependencies for the web app / uploader layer.
+# YouTube Shorts Studio - dependencies for the web app / pipeline layer.
 # Install on the host PC (the 3060 Ti machine) on top of the reframe deps:
 #   pip install -r requirements.txt -r requirements-studio.txt
-#   python -m playwright install chromium
 # Also install on PATH: ffmpeg + ffprobe, and the `cloudflared` binary.
 # ---------------------------------------------------------------------------
 
@@ -14,25 +13,30 @@ python-multipart>=0.0.9        # required by FastAPI for file uploads
 # Transcription (GPU-accelerated on your 3060 Ti via CUDA).
 faster-whisper>=1.0
 
-# Browser automation for Instagram / TikTok / Facebook.
-# Use the system Edge via channel="msedge" (no separate browser download needed),
-# or run `python -m playwright install chromium` for the bundled browser.
-playwright>=1.42
-
-# Encrypted credential vault (AES-256-GCM). If absent, credential storage simply
-# disables itself and the Edge-profile / saved-session login paths still work.
+# Encrypted credential vault (AES-256-GCM) for cloud LLM API keys. If absent,
+# credential storage simply disables itself.
 cryptography>=42.0
 
-# Arabic/RTL caption layout: measure word widths (Pillow) with correct joined
-# glyphs (arabic-reshaper) so each word can be positioned individually.
+# Arabic/RTL text: captions word layout, thumbnail headlines, and the
+# subscribe-overlay button label (reshape + bidi reorder, drawn with Pillow —
+# never Pillow's direction="rtl", which needs fribidi.dll on Windows).
 Pillow>=10.0
 arabic-reshaper>=3.0
+python-bidi>=0.4
 
-# Download source videos from a URL (YouTube etc.). aria2c (system binary) is
-# used automatically when on PATH for much faster multi-connection downloads.
+# Thumbnails: subject cutout (real face pixels; birefnet-portrait model).
+# CPU by default so the GPU stays free for Ollama/Whisper.
+rembg>=2.0.60
+onnxruntime>=1.17
+
+# Segment selection: fuzzy hook-quote grounding (difflib fallback exists).
+rapidfuzz>=3.0
+
+# Download source videos from a URL (YouTube). aria2c (system binary) is used
+# automatically when on PATH for much faster multi-connection downloads.
 yt-dlp>=2024.0
 
-# YouTube Data API v3 (official, free).
+# YouTube Data API v3 (official, free) — uploads + best-effort thumbnails.set.
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
 google-auth-httplib2>=0.2

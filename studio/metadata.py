@@ -1,8 +1,7 @@
-"""Value objects for the text that ships with a video.
+"""Value objects for the text that ships with a Short.
 
 Kept stdlib-only and JSON-friendly so it crosses the web boundary and the
-SQLite store without any framework coupling. Per-platform overrides let Ollama
-(or you, by hand) tailor wording while a single base caption covers the rest.
+SQLite store without any framework coupling.
 """
 
 from __future__ import annotations
@@ -10,14 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Length ceilings that keep us safely inside each platform's limits.
-_CAPTION_LIMITS = {
-    "youtube": 5000,
-    "facebook": 2200,
-    "instagram": 2200,
-    "tiktok": 2200,
-}
-_HASHTAG_CAP = {"youtube": 15, "facebook": 10, "instagram": 30, "tiktok": 8}
+_TITLE_MAX = 100          # YouTube hard-caps titles at 100 chars
+_DESCRIPTION_MAX = 5000   # YouTube description limit
+_HASHTAG_MAX = 15
 
 
 def normalize_hashtags(tags: list[str] | str | None) -> list[str]:
@@ -46,58 +40,55 @@ def normalize_hashtags(tags: list[str] | str | None) -> list[str]:
 
 @dataclass
 class VideoMeta:
-    """The base caption set, plus optional per-platform overrides.
-
-    ``overrides[platform]`` may carry any of ``title`` / ``caption`` /
-    ``hashtags``; missing keys fall back to the base value.
-    """
+    """Everything the user reviews before a Short is uploaded."""
 
     title: str = ""
-    caption: str = ""
+    description: str = ""
     hashtags: list[str] = field(default_factory=list)
-    overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
-    source: str = "manual"  # "manual" | "ollama" | "ollama+manual"
+    # The 3-6 word Arabic headline drawn onto the thumbnail (NOT the title).
+    thumbnail_headline: str = ""
+    source: str = "manual"  # "manual" | "ai" | "ai+manual"
 
-    # --- resolution per platform -------------------------------------------
-    def title_for(self, platform: str) -> str:
-        title = str(self.overrides.get(platform, {}).get("title", self.title)).strip()
-        if platform == "youtube" and "#shorts" not in title.lower():
-            # The single strongest signal to YouTube that this is a Short.
+    # --- what actually gets sent to YouTube ----------------------------------
+    def youtube_title(self) -> str:
+        title = self.title.strip()
+        if "#shorts" not in title.lower():
+            # Harmless legacy signal (classification is duration+aspect now).
             title = (title + " #Shorts").strip()
-        return title[:100]  # YouTube hard-caps titles at 100 chars
+        return title[:_TITLE_MAX]
 
-    def caption_for(self, platform: str) -> str:
-        ov = self.overrides.get(platform, {})
-        body = str(ov.get("caption", self.caption)).strip()
-        tags = normalize_hashtags(ov.get("hashtags", self.hashtags))
-        tags = tags[: _HASHTAG_CAP.get(platform, 10)]
-        if platform == "youtube" and not any(t.lower() == "#shorts" for t in tags):
+    def youtube_description(self) -> str:
+        body = self.description.strip()
+        tags = normalize_hashtags(self.hashtags)[:_HASHTAG_MAX]
+        if not any(t.lower() == "#shorts" for t in tags):
             tags = ["#Shorts", *tags]
         text = body
         if tags:
             text = (body + "\n\n" + " ".join(tags)).strip()
-        return text[: _CAPTION_LIMITS.get(platform, 2200)]
+        return text[:_DESCRIPTION_MAX]
 
     # --- (de)serialization --------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         return {
             "title": self.title,
-            "caption": self.caption,
+            "description": self.description,
             "hashtags": self.hashtags,
-            "overrides": self.overrides,
+            "thumbnail_headline": self.thumbnail_headline,
             "source": self.source,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "VideoMeta":
         d = d or {}
+        # Rows written before the redesign stored the description as "caption".
+        description = str(d.get("description") or d.get("caption") or "")
         return cls(
             title=str(d.get("title", "")),
-            caption=str(d.get("caption", "")),
+            description=description,
             hashtags=normalize_hashtags(d.get("hashtags")),
-            overrides=dict(d.get("overrides") or {}),
+            thumbnail_headline=str(d.get("thumbnail_headline", "")),
             source=str(d.get("source", "manual")),
         )
 
     def is_complete(self) -> bool:
-        return bool(self.title.strip() and self.caption.strip())
+        return bool(self.title.strip() and self.description.strip())

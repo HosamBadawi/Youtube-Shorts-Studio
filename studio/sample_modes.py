@@ -87,14 +87,15 @@ def main(argv: list[str] | None = None) -> int:
     language = cfg.metadata_language
     if language.lower() in {"auto", ""}:
         language = _LANG_NAMES.get((tr.language or "").lower(), "")
-    meta = ollama.generate_metadata(tr.text, None, niche, language) if \
+    meta = ollama.generate_copy(tr.text, niche, language) if \
         ollama.available() else None
 
     print("\n=== POST TEXT" + (f" ({language})" if language else "") + " ===")
     if meta:
-        print("title   :", meta.title)
-        print("caption :", meta.caption)
-        print("hashtags:", " ".join(meta.hashtags))
+        print("title      :", meta.title)
+        print("description:", meta.description)
+        print("headline   :", meta.thumbnail_headline)
+        print("hashtags   :", " ".join(meta.hashtags))
     else:
         print("(Ollama unavailable)")
 

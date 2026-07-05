@@ -1,21 +1,24 @@
-"""FastAPI server + mobile web UI for Daily Shorts Studio.
+"""FastAPI server + mobile web UI for YouTube Shorts Studio.
 
 Flow the phone page drives:
 
     POST /api/login                 password gate
-    GET  /api/status                ollama / platform / model summary
+    GET  /api/status                ollama / model / defaults summary
     GET  /api/library               list local source videos to pick from
     POST /api/generate              source (upload | url | local) + count
                                     -> kicks off multi-short generation
     GET  /api/batch/{id}            pre-render progress + the shorts as they land
     GET  /api/job/{id}              one short's status
-    POST /api/job/{id}/meta         save edited title/caption/hashtags
-    POST /api/job/{id}/generate     redraft a short's metadata with Ollama
-    POST /api/job/{id}/publish      publish that short to selected platforms
+    POST /api/job/{id}/meta         save edited title/description/headline
+    POST /api/job/{id}/generate     redraft a short's copy with the LLM
+    GET  /api/job/{id}/thumbnail    the short's generated thumbnail
+    GET  /api/job/{id}/frames       candidate thumbnail frames
+    POST /api/job/{id}/thumbnail    regenerate the thumbnail
+    POST /api/job/{id}/upload       upload that short to YouTube
     GET  /api/preview/{id}          stream a short's rendered mp4
 
-Heavy work (download/transcribe/reframe/publish) runs on a single-worker thread
-pool so the GPU is never double-booked and the event loop stays responsive.
+Heavy work (download/transcribe/reframe) runs on a single-worker thread pool so
+the GPU is never double-booked and the event loop stays responsive.
 """
 
 from __future__ import annotations
@@ -38,9 +41,9 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import StudioConfig
 from .jobs import STATUS_READY, JobStore
-from .metadata import VideoMeta, normalize_hashtags
+from .metadata import VideoMeta
 from .pipeline import StudioPipeline
-from .server_connections import build_connections_router, load_overrides
+from .server_connections import build_connections_router
 from .server_models import build_models_router, load_llm_selection
 from .vault import CredentialVault, _lockdown
 
@@ -77,22 +80,20 @@ def _token(key: bytes, password: str) -> str:
 def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     cfg = cfg or StudioConfig.load()
     cfg.ensure_dirs()
-    load_overrides(cfg)
     load_llm_selection(cfg)
     store = JobStore(cfg.db_path)
     vault = CredentialVault(cfg)
     pipeline = StudioPipeline(cfg, store, vault)
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio")
     net = ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-net")
-    # Publishing drives a browser (no GPU). Its own single-slot pool keeps a long
-    # publish from head-of-line-blocking GPU renders on `worker`, while staying
-    # single-slot so two browser sessions never contend over the live Edge profile.
+    # YouTube uploads are pure network I/O (chunked resumable upload) — a single
+    # slot keeps them ordered and off the GPU worker.
     publisher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-pub")
     gate_key = _gate_key(cfg)
     expected = _token(gate_key, cfg.app_password) if cfg.app_password else ""
-    batches: dict[str, dict] = {}    # pre-render progress per batch
     downloads: dict[str, dict] = {}  # progress per download job
-    runs: dict[str, dict] = {}       # progress per connection health/login run
+    runs: dict[str, dict] = {}       # progress per connection health run
+    # (batch progress lives in the DB so it survives a server restart)
 
     def _cap(d: dict, limit: int = 40) -> None:
         """Evict completed entries so these progress dicts don't grow unbounded
@@ -106,7 +107,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         logger.warning("app_password is still the default '%s' — change it in "
                        "studio.yaml before exposing the tunnel!", DEFAULT_PASSWORD)
 
-    app = FastAPI(title="Daily Shorts Studio")
+    app = FastAPI(title="YouTube Shorts Studio")
     # Mark the cookie Secure whenever the app is reachable over the HTTPS tunnel
     # (so the 30-day auth cookie can't leak over a plain-HTTP hop).
     cookie_secure = cfg.cookie_secure or (cfg.cloudflare_mode != "off")
@@ -189,11 +190,12 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             "ollama": ollama_up,
             "ollama_model": model,
             "llm_provider": cfg.llm_provider,
-            "platforms": list(cfg.enabled_platforms),
             "reframe_mode": cfg.reframe_mode,
             "default_count": cfg.shorts_per_video,
             "length_min": cfg.min_short_seconds,
             "length_max": cfg.max_short_seconds,
+            "default_privacy": cfg.youtube_privacy,
+            "embed_thumb": cfg.embed_thumb_first_frame,
             "needs_password_change": cfg.app_password == DEFAULT_PASSWORD,
             "vault_enabled": bool(vault and vault.enabled),
         }
@@ -225,15 +227,19 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(400, "no URL provided")
         did = uuid.uuid4().hex[:12]
         _cap(downloads)
-        downloads[did] = {"stage": "starting", "done": False, "error": "",
-                          "file": ""}
+        downloads[did] = {"stage": "starting", "percent": 0.0, "done": False,
+                          "error": "", "file": ""}
 
         def prog(d: dict) -> None:
             if d.get("status") == "downloading":
-                downloads[did]["stage"] = "downloading " + \
-                    d.get("_percent_str", "").strip()
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                got = d.get("downloaded_bytes")
+                if total and got:
+                    downloads[did]["percent"] = round(100.0 * got / total, 1)
+                downloads[did]["stage"] = "downloading"
             elif d.get("status") == "finished":
                 downloads[did]["stage"] = "finishing…"
+                downloads[did]["percent"] = 99.0
 
         def run() -> None:
             try:
@@ -244,6 +250,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
                                 allowlist=cfg.download_host_allowlist)
                 downloads[did]["file"] = Path(path).name
                 downloads[did]["stage"] = "done"
+                downloads[did]["percent"] = 100.0
             except Exception:  # pragma: no cover
                 logger.exception("download failed")
                 downloads[did]["error"] = "download failed — check the URL " \
@@ -256,7 +263,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
 
     @app.get("/api/download/{did}")
     async def download_status(did: str, _: None = Depends(require_auth)):
-        return downloads.get(did, {"stage": "", "done": True,
+        return downloads.get(did, {"stage": "", "percent": 0, "done": True,
                                    "error": "unknown id", "file": ""})
 
     # --- shorts library (all generated shorts, for publishing later) -------
@@ -309,35 +316,37 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         if mn and mx and mn > mx:
             mn, mx = mx, mn
         batch_id = uuid.uuid4().hex[:12]
-        _cap(batches)
-        batches[batch_id] = {"stage": "starting", "done": False, "error": ""}
-
-        def on_stage(s: str) -> None:
-            if batch_id in batches:
-                batches[batch_id]["stage"] = s
+        label = url.strip() if source_type == "url" else Path(source).name
+        store.batch_start(batch_id, label)
 
         def run() -> None:
             try:
                 pipeline.generate_shorts(source, n, niche=niche,
-                                         batch_id=batch_id, on_stage=on_stage,
+                                         batch_id=batch_id,
                                          min_s=mn, max_s=mx)
             except Exception:  # pragma: no cover
                 logger.exception("batch failed")
-                batches[batch_id]["error"] = "generation failed " \
-                    "(see server logs for details)"
+                store.batch_update(batch_id, error="generation failed "
+                                   "(see server logs for details)")
             finally:
-                batches[batch_id]["done"] = True
-                batches[batch_id]["stage"] = "done"
+                store.batch_update(batch_id, done=True)
 
         worker.submit(run)
         return {"ok": True, "batch_id": batch_id, "count": n}
 
     @app.get("/api/batch/{batch_id}")
     async def get_batch(batch_id: str, _: None = Depends(require_auth)):
-        b = batches.get(batch_id, {"stage": "", "done": True, "error": ""})
+        b = store.batch_get(batch_id) or {"stage": "", "percent": 0,
+                                          "done": True, "error": "unknown id",
+                                          "note": ""}
         shorts = [j.to_dict() for j in store.list_by_batch(batch_id)]
-        return {"batch_id": batch_id, "stage": b["stage"], "done": b["done"],
-                "error": b["error"], "shorts": shorts}
+        return {"batch_id": batch_id, "stage": b["stage"],
+                "percent": b["percent"], "done": b["done"],
+                "error": b["error"], "note": b["note"], "shorts": shorts}
+
+    @app.get("/api/batches")
+    async def recent_batches(_: None = Depends(require_auth)):
+        return {"batches": store.batch_list_recent(8)}
 
     # --- per-short ---------------------------------------------------------
     @app.get("/api/job/{job_id}")
@@ -370,61 +379,86 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(503, "the selected AI model is not reachable")
         body = await request.json()
         niche = str(body.get("niche", ""))
-        language = pipeline._metadata_language("")
-        meta = pipeline.llm.generate_metadata(job.transcript, None, niche,
-                                              language)
-        if meta:
-            job.meta = meta
-            store.update(job)
-        return {"ok": True, "meta": job.meta.to_dict()}
+        # Blocking LLM round-trip — keep it off the event loop.
+        meta = await run_in_threadpool(pipeline.regenerate_copy, job, niche)
+        return {"ok": True, "meta": meta.to_dict()}
 
-    @app.post("/api/job/{job_id}/publish")
-    async def publish(job_id: str, request: Request,
-                      _: None = Depends(require_auth)):
+    @app.post("/api/job/{job_id}/upload")
+    async def upload(job_id: str, request: Request,
+                     _: None = Depends(require_auth)):
         job = store.get(job_id)
         if not job:
             raise HTTPException(404, "job not found")
         if not job.output_path or job.status not in (STATUS_READY, "done"):
-            raise HTTPException(409, "short is not ready to publish yet")
+            raise HTTPException(409, "short is not ready to upload yet")
         if cfg.one_per_day and store.published_today():
-            raise HTTPException(429, "already published today (one_per_day is on)")
-        body = await request.json()
-        platforms = [p for p in body.get("platforms", [])
-                     if p in cfg.enabled_platforms]
-        if not platforms:
-            raise HTTPException(400, "no valid platforms selected")
+            raise HTTPException(429, "already uploaded today (one_per_day is on)")
         if not job.meta.is_complete():
-            raise HTTPException(400, "add a title and caption before publishing")
-        publisher.submit(pipeline.publish_job, job, platforms)
-        return {"ok": True, "platforms": platforms}
+            raise HTTPException(400, "add a title and description before uploading")
+        body = await request.json()
+        privacy = str(body.get("privacy", "") or "").strip().lower()
+        if privacy and privacy not in {"public", "unlisted", "private"}:
+            raise HTTPException(400, "invalid privacy")
+        embed = body.get("embed_thumb")
+        embed = cfg.embed_thumb_first_frame if embed is None else bool(embed)
+        if privacy:
+            job.privacy = privacy
+            store.update(job)
+        publisher.submit(pipeline.upload_job, job, embed_thumb=embed)
+        return {"ok": True}
 
-    @app.post("/api/job/{job_id}/rehearse")
-    async def rehearse(job_id: str, request: Request,
-                       _: None = Depends(require_auth)):
-        """Dry run: drive each platform's upload to the final post button and
-        screenshot the ready composer — but post NOTHING. Safe to run anytime."""
+    # --- thumbnails ---------------------------------------------------------
+    @app.get("/api/job/{job_id}/thumbnail")
+    async def get_thumbnail(job_id: str, _: None = Depends(require_auth)):
+        job = store.get(job_id)
+        if not job or not job.thumb_path or not Path(job.thumb_path).exists():
+            raise HTTPException(404, "no thumbnail yet")
+        return FileResponse(job.thumb_path, media_type="image/jpeg",
+                            headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/job/{job_id}/frames")
+    async def get_frames(job_id: str, _: None = Depends(require_auth)):
+        """The candidate face frames the thumbnail can be rebuilt from."""
         job = store.get(job_id)
         if not job:
             raise HTTPException(404, "job not found")
-        if not job.output_path or job.status not in (STATUS_READY, "done"):
-            raise HTTPException(409, "short is not ready yet")
-        body = await request.json()
-        platforms = [p for p in body.get("platforms", [])
-                     if p in cfg.enabled_platforms]
-        if not platforms:
-            raise HTTPException(400, "no valid platforms selected")
-        publisher.submit(pipeline.publish_job, job, platforms, dry_run=True)
-        return {"ok": True, "platforms": platforms, "dry_run": True}
+        from .thumbnails import list_candidates
+        return {"frames": list_candidates(cfg, job.id)}
 
-    @app.get("/api/rehearsal/{name}")
-    async def rehearsal(name: str, _: None = Depends(require_auth)):
-        # Serve a dry-run screenshot. Validate the name stays inside the dir.
-        if "/" in name or "\\" in name or not name.endswith(".png"):
+    @app.get("/api/job/{job_id}/frames/{name}")
+    async def get_frame(job_id: str, name: str, _: None = Depends(require_auth)):
+        # Candidate frame JPEGs live under thumbs/<job_id>/; no traversal.
+        if "/" in name or "\\" in name or not name.endswith(".jpg"):
             raise HTTPException(400, "bad name")
-        p = (cfg.rehearsals_dir / name).resolve()
-        if cfg.rehearsals_dir.resolve() not in p.parents or not p.exists():
-            raise HTTPException(404, "no such screenshot")
-        return FileResponse(p, media_type="image/png")
+        p = (cfg.thumbs_dir / Path(job_id).name / name).resolve()
+        if cfg.thumbs_dir.resolve() not in p.parents or not p.exists():
+            raise HTTPException(404, "no such frame")
+        return FileResponse(p, media_type="image/jpeg")
+
+    @app.post("/api/job/{job_id}/thumbnail")
+    async def regen_thumbnail(job_id: str, request: Request,
+                              _: None = Depends(require_auth)):
+        """Rebuild the thumbnail: optionally with a chosen candidate frame time,
+        a new headline, or a different template."""
+        job = store.get(job_id)
+        if not job:
+            raise HTTPException(404, "job not found")
+        if not job.output_path:
+            raise HTTPException(409, "short is not rendered yet")
+        body = await request.json()
+        frame_t = body.get("frame_t")
+        headline = str(body.get("headline", "") or "").strip()
+        template = str(body.get("template", "") or "").strip().lower()
+        if template and template not in {"auto", "blur", "burst", "flat"}:
+            raise HTTPException(400, "invalid template")
+
+        def run() -> None:
+            pipeline.rebuild_thumbnail(
+                job.id, frame_t=float(frame_t) if frame_t is not None else None,
+                headline=headline or None, template=template or None)
+
+        worker.submit(run)
+        return {"ok": True}
 
     @app.get("/api/preview/{job_id}")
     async def preview(job_id: str, _: None = Depends(require_auth)):
@@ -433,20 +467,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(404, "no preview yet")
         return FileResponse(job.output_path, media_type="video/mp4")
 
-    @app.get("/pub/{token}")
-    async def public_share(token: str):
-        # Deliberately NO auth: Meta's servers download the reel from here for
-        # the IG Content Publishing API and cannot log in. The 128-bit random,
-        # short-lived token (studio.public_share) is the secret.
-        from .public_share import resolve
-        path = resolve(token)
-        if not path or not Path(path).exists():
-            raise HTTPException(404, "unknown or expired share")
-        return FileResponse(path, media_type="video/mp4")
-
-    # --- connections / accounts + health ----------------------------------
-    # Connection health/login runs launch a browser; route them through the
-    # 'net' pool so a slow check never head-of-line-blocks GPU render/publish.
+    # --- health + YouTube connection status ---------------------------------
     app.include_router(build_connections_router(
         cfg, store, pipeline, vault, net, runs, require_auth))
     app.include_router(build_models_router(cfg, pipeline, vault, require_auth))

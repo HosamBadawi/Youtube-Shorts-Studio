@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "studio-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.environ.update({'STUDIO_WORKSPACE': os.path.join(os.environ.get('TEMP','.'), 'shorts_studio_preview_ws'), 'STUDIO_CLOUDFLARE_MODE': 'off', 'STUDIO_APP_PASSWORD': 'preview-pass-123', 'STUDIO_OLLAMA_ENABLED': 'false', 'STUDIO_VAULT_DB': os.path.join(os.environ.get('TEMP','.'), 'shorts_studio_preview_ws', 'secrets', 'vault.db')}); from studio.__main__ import main; main(['--no-tunnel', '--host', '127.0.0.1', '--port', '8899'])"
+      ],
+      "port": 8899
+    }
+  ]
+}

@@ -1,13 +1,14 @@
 """Local Ollama integration (runs on your PC, no cloud, no cost).
 
-Two jobs:
+Three jobs:
 
-1. :func:`pick_segment` - given a timestamped transcript, ask the model which
-   contiguous span makes the strongest standalone short, and return ``(start,
-   end)`` seconds. This is the "semantically separate the video based on the
-   transcription and timestamps" step.
-2. :func:`generate_metadata` - draft a title, caption and hashtags (optionally
-   tailored per platform).
+1. :func:`generate_json` - one JSON-mode round-trip, optionally constrained by
+   a JSON schema (Ollama >= 0.5 grammar-constrained decoding). This is the
+   primitive :mod:`studio.segmenter` builds its map->validate->reduce passes on.
+2. :func:`pick_segment` - given a timestamped transcript, ask the model which
+   contiguous span makes the strongest standalone short (single-short path).
+3. :func:`generate_copy` - draft the Arabic title (curiosity+result formula),
+   YouTube description, thumbnail headline and topic hashtags for one short.
 
 Talks to Ollama's HTTP API with the standard library only (urllib), so there is
 no extra pip dependency. Every call degrades gracefully: if Ollama is
@@ -54,10 +55,19 @@ class _BaseLLM:
     def resolve_model(self) -> str:
         return self.model
 
-    def _generate(self, prompt: str, want_json: bool = True) -> str | None:  # noqa
+    def _generate(self, prompt: str, want_json: bool = True,
+                  schema: dict | None = None) -> str | None:  # noqa
         raise NotImplementedError
 
     # --- high-level (provider-agnostic) ------------------------------------
+    def generate_json(self, prompt: str, schema: dict | None = None
+                      ) -> dict | list | None:
+        """One JSON round-trip. ``schema`` constrains decoding where the
+        provider supports it (Ollama); elsewhere it's advisory — describe the
+        expected shape in the prompt too. Schema-valid != semantically valid:
+        callers still validate fields and retry once themselves."""
+        self.resolve_model()
+        return _loads(self._generate(prompt, want_json=True, schema=schema))
     def pick_segment(self, timestamped_transcript: str, total_duration: float,
                      target_seconds: float, min_seconds: float | None = None,
                      max_seconds: float | None = None, min_start: float = 0.0
@@ -83,84 +93,47 @@ class _BaseLLM:
             return None
         return (start, end)
 
-    def pick_segments(self, timestamped_transcript: str, total_duration: float,
-                      count: int, target_seconds: float,
-                      min_seconds: float | None = None,
-                      max_seconds: float | None = None, min_start: float = 0.0
-                      ) -> list[tuple[float, float, str]]:
-        if not timestamped_transcript.strip() or count < 1:
-            return []
-        self.resolve_model()
-        lo, hi = _bounds(target_seconds, min_seconds, max_seconds)
-        # Show the model MORE of a long video when many shorts are requested — a
-        # flat 16k cap hid the back half, so it could only ever pick early clips.
-        budget = min(48000, max(16000, count * 3000))
-        prompt = _MULTI_SEGMENT_PROMPT.format(
-            count=count, target=int(target_seconds), min=int(lo), max=int(hi),
-            min_start=int(min_start),
-            total=int(total_duration),
-            transcript=timestamped_transcript[:budget])
-        obj = _loads(self._generate(prompt, want_json=True))
-        if not obj:
-            return []
-        raw = obj.get("segments") if isinstance(obj, dict) else obj
-        if not isinstance(raw, list):
-            return []
-        picked: list[tuple[float, float, str]] = []
-        for item in raw:
-            try:
-                s = max(0.0, float(item["start"]))
-                e = min(total_duration, float(item["end"]))
-            except (KeyError, TypeError, ValueError):
-                continue
-            s = max(s, min_start)      # respect the intro floor (clamp, don't drop)
-            if e - s >= 3.0:
-                picked.append((s, e, str(item.get("topic", "")).strip()))
-        picked.sort(key=lambda x: x[0])
-        out: list[tuple[float, float, str]] = []
-        for s, e, topic in picked:
-            if out and s < out[-1][1] - 1.0:
-                continue
-            out.append((s, e, topic))
-            if len(out) >= count:
-                break
-        logger.info("picked %d/%d segments", len(out), count)
-        return out
-
-    def generate_metadata(self, transcript_text: str, platform: str | None = None,
-                          niche: str = "", language: str = "") -> VideoMeta | None:
+    def generate_copy(self, transcript_text: str, niche: str = "",
+                      language: str = "", avoid_titles: list[str] | None = None
+                      ) -> VideoMeta | None:
+        """Title (curiosity+result), description, thumbnail headline, hashtags
+        for one short — a single structured round-trip, validated + 1 retry."""
         if not transcript_text.strip():
             transcript_text = "(no transcript available - infer from a generic " \
                               "engaging short-form video)"
         self.resolve_model()
-        lang_rule = (f"Write the title, caption AND hashtags in {language}."
-                     if language else
+        lang_rule = (f"Write everything in {language}." if language else
                      "Write everything in the SAME language as the transcript.")
-        prompt = _METADATA_PROMPT.format(
-            platform=platform or "generic short-form (YouTube/TikTok/Reels)",
+        avoid = [t.strip() for t in (avoid_titles or []) if t.strip()]
+        avoid_rule = ""
+        if avoid:
+            avoid_rule = ("\n   Do NOT reuse the opening words of these already-"
+                          "used titles (vary the formula):\n   - "
+                          + "\n   - ".join(avoid[:8]))
+        prompt = _COPY_PROMPT.format(
             niche=niche or "general", language_rule=lang_rule,
-            transcript=transcript_text[:6000])
-        obj = _loads(self._generate(prompt, want_json=True))
-        if not obj:
-            return None
-        return VideoMeta(
-            title=str(obj.get("title", "")).strip(),
-            caption=str(obj.get("caption", "")).strip(),
-            hashtags=normalize_hashtags(obj.get("hashtags")),
-            source="ai")
-
-    def generate_per_platform(self, transcript_text: str, platforms: list[str],
-                              niche: str = "", language: str = "") -> VideoMeta:
-        base = self.generate_metadata(transcript_text, None, niche,
-                                      language) or VideoMeta()
-        for p in platforms:
-            tailored = self.generate_metadata(transcript_text, p, niche, language)
-            if tailored:
-                base.overrides[p] = {"title": tailored.title,
-                                     "caption": tailored.caption,
-                                     "hashtags": tailored.hashtags}
-        base.source = "ai"
-        return base
+            avoid_rule=avoid_rule, transcript=transcript_text[:6000])
+        for _attempt in range(2):
+            obj = _loads(self._generate(prompt, want_json=True,
+                                        schema=_COPY_SCHEMA))
+            if not isinstance(obj, dict):
+                continue
+            title = str(obj.get("title", "")).strip()[:100]
+            description = str(obj.get("description", "")).strip()
+            headline = str(obj.get("headline", "")).strip()
+            if not title or not description:
+                continue
+            # A headline that just repeats the title defeats its purpose;
+            # keep the shorter emotional fragment if the model echoed it.
+            if headline and headline == title:
+                headline = " ".join(headline.split()[:5])
+            return VideoMeta(
+                title=title,
+                description=description,
+                hashtags=normalize_hashtags(obj.get("hashtags")),
+                thumbnail_headline=" ".join(headline.split()[:7]),
+                source="ai")
+        return None
 
 
 class OllamaClient(_BaseLLM):
@@ -202,18 +175,29 @@ class OllamaClient(_BaseLLM):
             return []
 
     def choose_model(self) -> str | None:
-        """Pick the most capable installed chat model.
+        """Pick the most capable installed chat model THAT FITS the GPU.
 
-        Heuristic: drop embedding-only models, then rank by parameter count,
-        with a small bump for proven instruct families. Bigger generally =
-        smarter; you can always override ``ollama_model`` in studio.yaml.
+        Heuristic: drop embedding-only models, prefer the highest-ranked model
+        whose weights fit in ~6 GB (a 7-9B q4 — leaves headroom on an 8 GB
+        card); only if nothing fits, fall back to the smallest model rather
+        than the biggest (a 35B spilling to CPU is unusably slow). You can
+        always override ``ollama_model`` in studio.yaml.
         """
         models = self.list_models()
         candidates = [m for m in models
                       if not _is_embedding(str(m.get("name", "")))]
         if not candidates:
             return None
-        best = max(candidates, key=_model_score)
+        fitting = [m for m in candidates
+                   if float(m.get("size", 0) or 0) <= _FIT_BYTES]
+        if fitting:
+            best = max(fitting, key=_model_score)
+        else:
+            best = min(candidates, key=lambda m: float(m.get("size", 0) or 0))
+            logger.warning(
+                "No installed Ollama model fits comfortably in VRAM; using the "
+                "smallest (%s). Consider `ollama pull qwen2.5:7b`.",
+                best.get("name"))
         return str(best.get("name"))
 
     def resolve_model(self) -> str:
@@ -230,16 +214,22 @@ class OllamaClient(_BaseLLM):
             logger.info("Auto-selected Ollama model: %s", picked)
         return self.model
 
-    def _generate(self, prompt: str, want_json: bool = True) -> str | None:
+    def _generate(self, prompt: str, want_json: bool = True,
+                  schema: dict | None = None) -> str | None:
         if not self.enabled:
             return None
         payload = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.6},
+            # Structured selection work wants determinism; prose can wander a bit.
+            "options": {"temperature": 0.2 if schema else 0.6},
         }
-        if want_json:
+        if schema:
+            # Ollama >= 0.5: grammar-constrained decoding from a JSON schema.
+            # Older builds reject non-"json" formats -> retried without below.
+            payload["format"] = schema
+        elif want_json:
             payload["format"] = "json"
         if not self.think and self._think_supported:
             payload["think"] = False
@@ -260,6 +250,10 @@ class OllamaClient(_BaseLLM):
             if exc.code == 400 and "think" in payload:
                 self._think_supported = False
                 payload.pop("think", None)
+                return self._post_generate(payload)
+            # Pre-0.5 Ollama rejects a JSON-schema "format" -> plain json mode.
+            if exc.code == 400 and isinstance(payload.get("format"), dict):
+                payload["format"] = "json"
                 return self._post_generate(payload)
             logger.warning("Ollama HTTP %s: %s", exc.code,
                            exc.read().decode()[:200])
@@ -291,16 +285,19 @@ class CloudLLM(_BaseLLM):
     def list_models(self) -> list[str]:
         return CLOUD_MODELS.get(self.provider, [])
 
-    def _generate(self, prompt: str, want_json: bool = True) -> str | None:
+    def _generate(self, prompt: str, want_json: bool = True,
+                  schema: dict | None = None) -> str | None:
+        # ``schema`` is enforced by Ollama only; cloud providers get JSON mode
+        # and rely on the shape being described in the prompt (callers validate).
         if not self.available():
             return None
         try:
             if self.provider == "openai":
-                return self._openai(prompt, want_json)
+                return self._openai(prompt, want_json or bool(schema))
             if self.provider == "anthropic":
                 return self._anthropic(prompt)
             if self.provider == "gemini":
-                return self._gemini(prompt, want_json)
+                return self._gemini(prompt, want_json or bool(schema))
         except urllib.error.HTTPError as exc:
             logger.warning("%s HTTP %s: %s", self.provider, exc.code,
                            exc.read().decode()[:200])
@@ -360,6 +357,9 @@ def make_llm(cfg, vault=None) -> _BaseLLM:
 
 # Models that only produce embeddings - useless for generation, never pick them.
 _EMBEDDING_HINTS = ("embed", "bge", "nomic", "minilm", "gte", "e5", "mxbai")
+# On-disk weight budget for auto-selection: a q4 model this size still leaves
+# working VRAM on an 8 GB card (7-9B q4 ~= 4.4-5.5 GB).
+_FIT_BYTES = 6.0e9
 # Small bump for families known to follow instructions well in this kind of task.
 _FAMILY_BONUS = {
     "llama": 1.5, "qwen": 1.5, "qwen2": 1.5, "mistral": 1.2, "mixtral": 1.3,
@@ -448,53 +448,46 @@ Respond with ONLY a JSON object:
 "reason": "<short why this is a spicy hook>"}}"""
 
 
-_MULTI_SEGMENT_PROMPT = """You are choosing {count} DISTINCT clips from a longer \
-video ({total} seconds) to cut into separate vertical shorts. Below is the \
-transcript with [mm:ss] timestamps.
-
-HARD RULE — NEVER use the opening of the video. The first {min_start} seconds are \
-intro / greeting / setup / throat-clearing and are BANNED. EVERY clip must start at \
-or after {min_start} seconds (start >= {min_start}).
-
-Pick {count} NON-OVERLAPPING segments. Each one must:
-- start on the SPICIEST hook available — a bold claim, a surprising or controversial \
-statement, a provocative question, or a strong emotional beat that stops a scroller \
-in the first 2 seconds (NEVER start mid-setup or on a calm intro),
-- cover a DIFFERENT topic / self-contained idea (no two shorts about the same point),
-- end on a satisfying or curiosity-driving beat,
-- be between {min} and {max} seconds long (target ~{target}s), never under {min}.
-Spread them across the video AFTER {min_start}s so they don't overlap.
-
-Transcript:
-{transcript}
-
-Respond with ONLY a JSON object:
-{{"segments": [
-  {{"start": <seconds:number, must be >= {min_start}>, "end": <seconds:number>, \
-"topic": "<short topic>"}}
-]}}  - exactly {count} items, ordered by start time."""
+_COPY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "headline": {"type": "string"},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "description", "headline", "hashtags"],
+}
 
 
-_METADATA_PROMPT = """You write high-performing social copy for short-form vertical \
-video on {platform}. The content niche is: {niche}.
+_COPY_PROMPT = """You write high-performing YouTube Shorts copy. The channel \
+niche is: {niche}. Base everything ONLY on the clip transcript below — never \
+promise anything the clip doesn't deliver. {language_rule}
 
-Based on this transcript, write metadata that maximizes watch-through and shares. \
-Be punchy and native to the platform. Avoid clickbait lies. {language_rule}
+Write four things:
 
-The caption MUST follow this exact two-part pattern (it performs best):
-1. HOOK — one short, provocative QUESTION about the video's core claim
-   (e.g. "هل الطاقة الكونية مجرد خيال أو حقيقة علمية؟").
-2. CTA — ONE short sentence teasing the answer, in the niche's framing
-   (e.g. "اكتشف الحقيقة من منظور إسلامي.").
-Nothing else in the caption: no emojis spam, no links, NO hashtags inside it.
+1. "title" — a YouTube Shorts title following the Curiosity + Result formula:
+   [شيء غريب أو معلومة] + هل تعلم / لن تصدق + النتيجة
+   Style examples of the PATTERN (do not copy them literally):
+   - لن تصدق ماذا حدث بعد...
+   - هل تعلم السر الحقيقي وراء...
+   - أغرب حقيقة ستغير نظرتك...
+   Maximum 80 characters. Highly clickable but never a lie.{avoid_rule}
 
-Hashtags: 3-5, each a specific TOPIC from this video (not generic like #video
-or #viral), in the same language as the caption.
+2. "description" — 2-3 SHORT lines: a hook question about the clip's core \
+claim, one line of value/context, one call-to-action line (follow / watch to \
+the end). No links, no hashtags inside it.
+
+3. "headline" — 3 to 6 words for the THUMBNAIL in huge letters: the emotional \
+core of the clip (a shock, a secret, a number, a question). NOT a copy of the \
+title.
+
+4. "hashtags" — 3-5 specific TOPIC hashtags from this clip (never generic \
+like #video or #viral), in the same language as the title.
 
 Transcript:
 {transcript}
 
 Respond with ONLY a JSON object:
-{{"title": "<<=80 chars, scroll-stopping>",
-  "caption": "<question hook>? <one-sentence CTA>",
-  "hashtags": ["#tag1", "#tag2", "#tag3"]}}"""
+{{"title": "...", "description": "...", "headline": "...", \
+"hashtags": ["#tag1", "#tag2", "#tag3"]}}"""

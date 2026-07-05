@@ -1,9 +1,9 @@
 """Health checks: server self-health and per-platform login health.
 
-``HealthStatus`` is the small value object the publishers also return (kept here
+``HealthStatus`` is the small value object the publisher also returns (kept here
 to avoid an import cycle). ``server_health`` answers "is this box able to do its
-job?" (ffmpeg, dirs, Ollama, DB, disk, Playwright). ``platform_health`` answers
-"is this account still logged in?" without uploading anything.
+job?" (ffmpeg, dirs, Ollama, DB, disk). ``platform_health`` answers "is the
+YouTube token still valid?" without uploading anything.
 """
 
 from __future__ import annotations
@@ -71,14 +71,6 @@ def server_health(cfg: StudioConfig, store=None) -> dict:
         add("disk free", free_gb > 2.0, f"{free_gb:.1f} GB free")
     except Exception as exc:
         add("disk free", False, str(exc), critical=False)
-
-    # Playwright (optional — only needed for IG/TikTok/FB)
-    try:
-        import playwright  # noqa: F401
-        add("playwright", True, critical=False)
-    except Exception:
-        add("playwright", False, "pip install playwright + playwright install",
-            critical=False)
 
     # cloudflared (optional — only for the phone tunnel)
     add("cloudflared", shutil.which(cfg.cloudflared_bin) is not None,

@@ -21,8 +21,7 @@ from pathlib import Path
 from .captions import CaptionStyle, burn_captions
 from .config import StudioConfig
 from .llm import OllamaClient
-from .pipeline import (_LANG_NAMES, _enforce_bounds, _offset_words,
-                       _probe_duration)
+from .pipeline import _LANG_NAMES, _offset_words, _probe_duration
 from .prepare import _force_utf8_console
 from .transcribe import transcribe
 
@@ -77,18 +76,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[FAIL] no transcript ({tr.note}); cannot split into topics.")
         return 1
 
-    # 2. ask the LLM for N distinct, non-overlapping segments ----------------
-    print(f"Asking {cfg.ollama_model} for {count} distinct segments…")
-    segments = ollama.pick_segments(tr.timestamped(), duration, count,
-                                    cfg.target_short_seconds,
-                                    cfg.min_short_seconds, cfg.max_short_seconds)
-    if not segments:
-        print("[FAIL] the model returned no usable segments.")
+    # 2. semantic selection (sentence-snapped, junk-masked) -------------------
+    print(f"Asking {cfg.ollama_model} for up to {count} distinct segments…")
+    from .segmenter import select_segments
+    picks = select_segments(ollama, tr, duration, count,
+                            cfg.min_short_seconds, cfg.max_short_seconds,
+                            window=cfg.segment_window_sentences,
+                            overlap=cfg.segment_overlap_sentences)
+    if not picks:
+        print("[FAIL] the model found no strong self-contained segments.")
         return 1
-    segments = [(*_enforce_bounds((s, e), cfg.min_short_seconds,
-                                  cfg.max_short_seconds, duration), topic)
-                for s, e, topic in segments]
-    print(f"Got {len(segments)} segments. Rendering as '{mode}'…\n")
+    segments = [(p.start, p.end, p.topic) for p in picks]
+    print(f"Got {len(segments)} segment(s). Rendering as '{mode}'…\n")
 
     language = cfg.metadata_language
     if language.lower() in {"auto", ""}:
@@ -122,13 +121,12 @@ def main(argv: list[str] | None = None) -> int:
                 Path(raw).unlink(missing_ok=True)
 
             seg_text = " ".join(w.text for w in tr.words if start <= w.start < end)
-            meta = (ollama.generate_metadata(seg_text or topic, None, niche,
-                                             language)
+            meta = (ollama.generate_copy(seg_text or topic, niche, language)
                     if ollama.available() else None)
             print(f"   topic : {topic or '(n/a)'}")
             if meta:
                 print(f"   title : {meta.title}")
-                print(f"   caption: {meta.caption}")
+                print(f"   desc  : {meta.description}")
                 print(f"   tags  : {' '.join(meta.hashtags)}")
                 _write_caption_file(str(base) + ".txt", meta, topic, start, end)
             print(f"   video : {out}\n", flush=True)
@@ -149,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _write_caption_file(path, meta, topic, start, end) -> None:
     lines = [f"topic: {topic}", f"segment: {start:.0f}s - {end:.0f}s", "",
-             meta.title, "", meta.caption, "", " ".join(meta.hashtags)]
+             meta.title, "", meta.description, "", " ".join(meta.hashtags)]
     Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 

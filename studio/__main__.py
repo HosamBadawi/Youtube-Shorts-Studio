@@ -16,7 +16,7 @@ from .config import StudioConfig
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="studio",
-                                     description="Daily Shorts Studio server.")
+                                     description="YouTube Shorts Studio server.")
     parser.add_argument("--config", default=None, help="Path to studio.yaml")
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
