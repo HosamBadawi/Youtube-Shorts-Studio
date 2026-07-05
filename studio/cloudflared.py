@@ -22,7 +22,30 @@ import threading
 from .config import StudioConfig
 
 logger = logging.getLogger(__name__)
-_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+# Negative lookahead: cloudflared's ERROR lines mention its API host
+# "https://api.trycloudflare.com" (e.g. "context deadline exceeded"), which must
+# never be mistaken for the assigned public URL.
+_URL_RE = re.compile(r"https://(?!api\.)[a-z0-9-]+\.trycloudflare\.com")
+
+# The current public URL (quick mode), for anything that must hand a public
+# link to an external service — e.g. the IG Content Publishing API downloads
+# the video from a public URL. Written by _watch, read via public_url().
+_current_url: str = ""
+_url_file = None  # set by start_tunnel so the URL survives module reloads
+
+
+def public_url(cfg: StudioConfig | None = None) -> str:
+    """The tunnel's public base URL ('' if unknown). Falls back to the file
+    written at announce time so worker threads/new processes can read it."""
+    if _current_url:
+        return _current_url
+    try:
+        if cfg is not None:
+            p = cfg.workspace_path / "tunnel_url.txt"
+            return p.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return ""
 
 
 def start_tunnel(cfg: StudioConfig) -> subprocess.Popen | None:
@@ -46,17 +69,26 @@ def start_tunnel(cfg: StudioConfig) -> subprocess.Popen | None:
     logger.info("Starting Cloudflare tunnel (%s mode)…", cfg.cloudflare_mode)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1)
+    global _url_file
+    _url_file = cfg.workspace_path / "tunnel_url.txt"
     threading.Thread(target=_watch, args=(proc,), daemon=True).start()
     return proc
 
 
 def _watch(proc: subprocess.Popen) -> None:
+    global _current_url
     announced = False
     for line in proc.stdout:  # type: ignore[union-attr]
         m = _URL_RE.search(line)
         if m and not announced:
             announced = True
             url = m.group(0)
+            _current_url = url
+            try:                      # persist for other threads/processes
+                if _url_file is not None:
+                    _url_file.write_text(url, encoding="utf-8")
+            except Exception:
+                pass
             print("\n" + "=" * 60, flush=True)
             print(f"  📱 Open this on your phone:  {url}", flush=True)
             print("=" * 60 + "\n", flush=True)

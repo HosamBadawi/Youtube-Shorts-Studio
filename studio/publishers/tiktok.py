@@ -88,22 +88,40 @@ class TikTokPublisher(PlaywrightPublisher):
         self.wait_uploaded(lambda: _post_locator(frame), log, "tiktok upload")
         _dismiss_popups(frame)                       # popups can also appear late
         if _captcha(frame):
-            return PublishResult.failure(
-                self.name, "TikTok slider CAPTCHA — solve it in the browser, then "
-                "retry", needs_login=True, log=log)
+            # Raise (not return): a CAPTCHA needs a human, so retrying just wastes
+            # another slow re-upload. Terminal -> surfaced once as needs_login.
+            raise NeedsLogin("TikTok slider CAPTCHA — solve it in the browser, "
+                             "then retry")
         log.append("clicking Post")
         if not _click_post(frame):
             return PublishResult.failure(self.name, "no Post button", log=log)
+        page.wait_for_timeout(2500)
+        _confirm_post_dialog(page, frame, log)   # 'Continue to post?' -> Post now
         # Real success: TikTok shows '✓ Video published' and navigates to
         # /tiktokstudio/content — wait for THAT, not just a closed composer.
         if _wait_published(page, frame, self.cfg.publish_upload_timeout, log):
             log.append("confirmed posted")
             return PublishResult.success(self.name, url=self.home_url, log=log)
+        # Post was CLICKED but not confirmed. Raise (not return) so the base loop
+        # does NOT retry — re-running _do_publish would re-upload = a DOUBLE post.
+        # Screenshot first: the raise path skips the base class's failure shot,
+        # which left us blind to WHAT blocked the post (modal/captcha/error).
+        self._shot_unconfirmed(page, log)
         if _captcha(frame):
-            return PublishResult.failure(
-                self.name, "TikTok slider CAPTCHA blocked the post — solve it and "
-                "retry", needs_login=True, log=log)
-        return PublishResult.failure(self.name, "no post confirmation seen", log=log)
+            raise NeedsLogin("TikTok slider CAPTCHA blocked the post — solve it "
+                             "and retry")
+        raise NeedsLogin("clicked Post but TikTok didn't confirm — check your "
+                         "TikTok posts before retrying (avoids a double-post)")
+
+    def _shot_unconfirmed(self, page, log) -> None:
+        try:
+            self.cfg.failures_dir.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            p = self.cfg.failures_dir / f"tiktok_unconfirmed_{stamp}.png"
+            page.screenshot(path=str(p))
+            log.append(f"screenshot: {p}")
+        except Exception:
+            pass
 
 
 def _upload_frame(page):
@@ -149,8 +167,16 @@ def _captcha(frame) -> bool:
 def _wait_published(page, frame, timeout_s: float, log: list[str]) -> bool:
     """Wait for TikTok's REAL confirmation: navigation to /tiktokstudio/content,
     or a 'Video published' toast. Bails out (False) if a CAPTCHA appears so the
-    caller can surface it instead of reporting a false success."""
+    caller can surface it instead of reporting a false success.
+
+    RE-CLICK LOGIC: TikTok silently IGNORES the Post click while its
+    'Content check' is still running (verified by a failure screenshot: the
+    composer sat fully-ready with an enabled Post button 20 minutes after our
+    click). An enabled Post button still on screen is PROOF nothing was
+    submitted, so re-clicking is double-post-safe — we re-click every ~20s
+    until the composer actually goes away."""
     deadline = time.time() + max(60.0, float(timeout_s))
+    last_click = time.time()
     while time.time() < deadline:
         page.wait_for_timeout(5000)
         try:
@@ -160,7 +186,9 @@ def _wait_published(page, frame, timeout_s: float, log: list[str]) -> bool:
                 return True
         except Exception:
             pass
-        for t in ("Video published", "being uploaded", "Manage your posts"):
+        # NOTE: "being uploaded" is a PROGRESS state, NOT completion — treating it
+        # as success reported a post before the upload had actually finished.
+        for t in ("Video published", "Manage your posts", "Your videos"):
             try:
                 if frame.get_by_text(t, exact=False).count() > 0:
                     log.append(f"success: {t}")
@@ -169,6 +197,22 @@ def _wait_published(page, frame, timeout_s: float, log: list[str]) -> bool:
                 pass
         if _captcha(frame):
             return False
+        # The 'Continue to post?' dialog can appear at any point after the
+        # click (its copyright check finishes asynchronously) — always confirm.
+        if _confirm_post_dialog(page, frame, log):
+            last_click = time.time()
+            continue
+        try:
+            btn = _post_locator(frame).first
+            if (btn.count() > 0 and btn.is_enabled()
+                    and time.time() - last_click > 20):
+                log.append("Post button still enabled (click was ignored) — "
+                           "re-clicking")
+                _dismiss_popups(frame)
+                _click_post(frame)
+                last_click = time.time()
+        except Exception:
+            pass
     return False
 
 
@@ -185,17 +229,65 @@ def _dismiss_popups(frame) -> None:
             continue
 
 
+def _confirm_post_dialog(page, frame, log: list[str]) -> bool:
+    """Click through TikTok's post-click confirmation dialog.
+
+    Clicking Post while TikTok's copyright/content check is still running pops
+    'Continue to post?' — "The copyright check is incomplete... Do you want to
+    continue posting before the check is complete?" with Cancel / **Post now**.
+    Without clicking 'Post now' NOTHING posts (verified live). The dialog can
+    live in the page or the composer frame — check both."""
+    for ctx in (frame, page):
+        for label in ("Post now", "Post Now", "Continue"):
+            try:
+                el = ctx.get_by_role("button", name=label, exact=True).first
+                if el.count() > 0:
+                    el.click(timeout=3000)
+                    log.append(f"confirmation dialog: clicked '{label}'")
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def _set_caption(frame, caption: str, log: list[str]) -> None:
+    """Write the caption as ONE atomic insert — never per-key typing.
+
+    Typing char-by-char into TikTok's Draft.js box DROPPED and REORDERED
+    characters: each '#' pops the hashtag-autocomplete dropdown, which steals
+    the caret mid-type (worse with RTL Arabic). A posted description came out
+    mangled ("خيا" for "خيال", the opening glued after the hashtags). insert_text
+    delivers the whole string in a single input event, then we VERIFY what
+    landed and fall back to slow typing if the editor ate it."""
+    text = caption[:2150]
     for sel in _CAPTION_SEL:
         try:
             box = frame.locator(sel).first
-            if box.count() > 0:
+            if box.count() == 0:
+                continue
+            box.click()
+            box.press("Control+A")
+            box.press("Delete")
+            box.page.keyboard.insert_text(text)
+            frame.wait_for_timeout(800)
+            box.press("Escape")            # close any hashtag dropdown
+            got = ""
+            try:
+                got = (box.inner_text() or "").strip()
+            except Exception:
+                pass
+            if len(got) >= int(0.8 * len(text)):
+                log.append("caption set (atomic insert, verified)")
+            else:
+                log.append(f"caption verify failed ({len(got)}/{len(text)} "
+                           "chars) — clearing and retyping slowly")
                 box.click()
                 box.press("Control+A")
                 box.press("Delete")
-                box.type(caption[:2150], delay=8)
-                log.append("caption set")
-                return
+                box.type(text, delay=60)
+                box.press("Escape")
+                log.append("caption set (slow retype)")
+            return
         except Exception:
             continue
     log.append("warning: caption field not found")

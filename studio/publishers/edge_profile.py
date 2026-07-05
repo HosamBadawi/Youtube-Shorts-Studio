@@ -141,18 +141,24 @@ def ensure_edge_closed(cfg: StudioConfig) -> bool:
     if not cfg.edge_close_if_running:
         return False
     logger.info("closing Edge to free the live profile…")
-    try:
-        subprocess.run(["taskkill", "/IM", "msedge.exe", "/F", "/T"], check=False,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
-    # Wait until every msedge process is really gone (a lingering one keeps the
-    # profile locked -> the automated launch loads no cookies -> false logout).
-    for _ in range(20):
-        if not edge_running():
-            time.sleep(0.5)   # let the profile lock release
-            return True
-        time.sleep(0.5)
+    # Edge's "startup boost" respawns background msedge processes right after a
+    # kill, which kept the profile locked and made the whole browser chain fall
+    # through ("no logged-in session"). Re-issue the kill while waiting instead
+    # of killing once and hoping.
+    for attempt in range(4):
+        try:
+            subprocess.run(["taskkill", "/IM", "msedge.exe", "/F", "/T"],
+                           check=False, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        for _ in range(6):
+            if not edge_running():
+                time.sleep(0.8)   # let the profile lock release
+                if not edge_running():   # startup boost may respawn — re-check
+                    return True
+                break                    # respawned -> kill again
+            time.sleep(0.5)
     return not edge_running()
 
 
@@ -185,10 +191,6 @@ def open_context(p, cfg: StudioConfig, headless: bool,
     profile = cfg.edge_profile_dir or "Default"
 
     if cfg.edge_use_live_profile:
-        if not ensure_edge_closed(cfg):
-            logger.warning("edge_use_live_profile: Edge is open — close it (or "
-                           "set edge_close_if_running). Falling through.")
-            return None
         user_data = Path(cfg.edge_user_data_dir).expanduser()
     else:
         work_root = prepare_copy(cfg)
@@ -197,10 +199,24 @@ def open_context(p, cfg: StudioConfig, headless: bool,
         user_data = work_root
 
     from .playwright_base import launch_persistent
-    try:
-        return launch_persistent(p, user_data, headless,
-                                 viewport=(viewport or (1280, 900)),
-                                 profile_dir=profile)
-    except Exception as exc:
-        logger.warning("edge msedge launch failed (%s); falling through", exc)
-        return None
+    # Edge's "startup boost" (or the user) can bring msedge back in the seconds
+    # between a close and our launch — Playwright then "opens in existing
+    # browser session" and times out. So close IMMEDIATELY before each launch
+    # attempt and retry the launch itself.
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        if cfg.edge_use_live_profile and not ensure_edge_closed(cfg):
+            logger.warning("edge profile locked: Edge is open and could not be "
+                           "closed (attempt %d/3)", attempt)
+            time.sleep(2.0)
+            continue
+        try:
+            return launch_persistent(p, user_data, headless,
+                                     viewport=(viewport or (1280, 900)),
+                                     profile_dir=profile)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("edge launch attempt %d/3 failed (%s)", attempt,
+                           str(exc)[:200])
+    logger.warning("edge msedge launch failed (%s); falling through", last_exc)
+    return None

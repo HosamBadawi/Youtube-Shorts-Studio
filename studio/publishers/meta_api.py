@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -31,6 +32,19 @@ from .base import PublishResult
 logger = logging.getLogger(__name__)
 
 GRAPH = "https://graph.facebook.com"
+
+
+def _probe_seconds(path: str) -> float:
+    """Duration of a local video (0.0 on failure — then the API path is tried
+    and Meta's own validation is the backstop)."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", path],
+            capture_output=True, text=True, timeout=60).stdout
+        return float(json.loads(out)["format"]["duration"])
+    except Exception:
+        return 0.0
 
 
 class _MetaBase:
@@ -175,15 +189,39 @@ class InstagramApiPublisher(_MetaBase):
                                          needs_login=True)
         if not ig:
             return PublishResult.failure(self.name, "instagram_business_id not set")
+        # HYBRID: the IG API rejects reels over ~90s (verified: 85s FINISHED,
+        # 172s ERROR 2207077) even though the app allows 3 min. Longer reels
+        # automatically fall back to the (proven) browser publisher.
+        limit = float(getattr(self.cfg, "instagram_api_max_seconds", 90.0) or 90.0)
+        dur = _probe_seconds(video_path)
+        if dur > limit:
+            log.append(f"reel is {dur:.0f}s > the IG API's {limit:.0f}s cap — "
+                       "falling back to the browser publisher")
+            from .instagram import InstagramPublisher
+
+            browser = InstagramPublisher(self.cfg, self.vault)
+            browser.dry_run = self.dry_run
+            browser.on_attempt = self.on_attempt
+            res = browser.publish(video_path, meta)
+            res.log = log + list(res.log or [])
+            return res
         caption = meta.caption_for("instagram")
         if self.dry_run:
             return PublishResult.rehearsed(
                 self.name, log=["DRY RUN — token+ig ok; would publish a Reel via "
                                 "the Content Publishing API (nothing posted)"])
         if not video_url:
-            return PublishResult.failure(
-                self.name, "IG API needs a public video_url (served via the "
-                           "tunnel) — not provided")
+            # Self-serve: register the file as a short-lived public share on the
+            # tunnel so Meta's servers can download it (they can't log in).
+            from ..cloudflared import public_url
+            from ..public_share import register
+            base = public_url(self.cfg)
+            if not base:
+                return PublishResult.failure(
+                    self.name, "IG API needs the public tunnel URL and none is "
+                               "active — is the Cloudflare tunnel running?")
+            video_url = f"{base}/pub/{register(video_path)}"
+            log.append("registered public share for Meta download")
         try:
             # 1) create the REELS container (IG fetches the file from video_url)
             cont = self._post(f"{ig}/media",

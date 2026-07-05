@@ -138,6 +138,9 @@ def _open_create(page) -> bool:
 
 
 def _set_caption(page, caption: str) -> None:
+    # ONE atomic insert, never per-key typing: each '#' keystroke pops IG's
+    # hashtag-autocomplete, which can steal the caret mid-type and drop/reorder
+    # characters (this mangled a TikTok caption; same editor pattern here).
     for sel in ("textarea[aria-label*='caption']",
                 "div[aria-label*='caption'][contenteditable=true]",
                 "div[contenteditable=true]"):
@@ -145,7 +148,11 @@ def _set_caption(page, caption: str) -> None:
             box = page.locator(sel).first
             if box.count() > 0:
                 box.click()
-                box.type(caption[:2150], delay=5)
+                page.keyboard.insert_text(caption[:2150])
+                page.wait_for_timeout(500)
+                # NO Escape here: on IG's reel composer Escape pops "Discard
+                # post?" and blocks Share. insert_text is atomic so the hashtag
+                # dropdown never steals the caret anyway.
                 return
         except Exception:
             continue
@@ -185,18 +192,46 @@ def _sharing(page) -> bool:
     return False
 
 
+def _shared_ok(page) -> bool:
+    """A positive 'reel shared' confirmation, for the case where the 'Sharing…'
+    spinner was never observed (fast upload / missed selector). We do NOT assume
+    success from the spinner's mere absence — that was the false-positive."""
+    for t in ("Your reel has been shared", "Your post has been shared",
+              "Reel shared"):
+        try:
+            if page.get_by_text(t, exact=False).count() > 0:
+                return True
+        except Exception:
+            pass
+    try:  # composer gone (no Share/Next button left) -> the dialog submitted
+        return (page.get_by_role("button", name="Share").count() == 0
+                and page.get_by_role("button", name="Next").count() == 0)
+    except Exception:
+        return False
+
+
 def _wait_sharing_done(page, timeout_s: float, log: list[str]) -> bool:
-    """Wait for the post-Share upload to complete: the 'Sharing…' indicator
-    appears, then disappears. Generous timeout for slow upload speeds."""
+    """Wait for the post-Share upload to finish: the 'Sharing…' indicator appears,
+    then disappears. If it NEVER appears, do NOT assume success from its absence
+    (that false-positived) — require a real 'shared' signal instead."""
+    appeared = False
     for _ in range(20):                        # let 'Sharing…' appear (~30s)
         if _sharing(page):
+            appeared = True
             break
         page.wait_for_timeout(1500)
     deadline = time.time() + max(60.0, float(timeout_s))
     while time.time() < deadline:
         page.wait_for_timeout(5000)
         if not _sharing(page):
-            log.append("sharing finished")
-            page.wait_for_timeout(4000)        # settle before closing
-            return True
+            if appeared:                       # appeared THEN cleared = real finish
+                log.append("sharing finished")
+                page.wait_for_timeout(4000)    # settle before closing
+                return True
+            if _shared_ok(page):               # never saw spinner -> need proof
+                log.append("shared (confirmed via success signal)")
+                page.wait_for_timeout(3000)
+                return True
+            log.append("no 'Sharing' indicator and no success signal — unconfirmed")
+            return False
     return False

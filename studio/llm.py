@@ -60,7 +60,7 @@ class _BaseLLM:
     # --- high-level (provider-agnostic) ------------------------------------
     def pick_segment(self, timestamped_transcript: str, total_duration: float,
                      target_seconds: float, min_seconds: float | None = None,
-                     max_seconds: float | None = None
+                     max_seconds: float | None = None, min_start: float = 0.0
                      ) -> tuple[float, float] | None:
         if not timestamped_transcript.strip():
             return None
@@ -68,6 +68,7 @@ class _BaseLLM:
         lo, hi = _bounds(target_seconds, min_seconds, max_seconds)
         prompt = _SEGMENT_PROMPT.format(
             target=int(target_seconds), min=int(lo), max=int(hi),
+            min_start=int(min_start),
             total=int(total_duration), transcript=timestamped_transcript[:8000])
         obj = _loads(self._generate(prompt, want_json=True))
         if not obj:
@@ -77,6 +78,7 @@ class _BaseLLM:
             end = min(total_duration, float(obj["end"]))
         except (KeyError, TypeError, ValueError):
             return None
+        start = max(start, min_start)  # respect the intro floor (clamp, don't drop)
         if end - start < 3.0:
             return None
         return (start, end)
@@ -84,16 +86,20 @@ class _BaseLLM:
     def pick_segments(self, timestamped_transcript: str, total_duration: float,
                       count: int, target_seconds: float,
                       min_seconds: float | None = None,
-                      max_seconds: float | None = None
+                      max_seconds: float | None = None, min_start: float = 0.0
                       ) -> list[tuple[float, float, str]]:
         if not timestamped_transcript.strip() or count < 1:
             return []
         self.resolve_model()
         lo, hi = _bounds(target_seconds, min_seconds, max_seconds)
+        # Show the model MORE of a long video when many shorts are requested — a
+        # flat 16k cap hid the back half, so it could only ever pick early clips.
+        budget = min(48000, max(16000, count * 3000))
         prompt = _MULTI_SEGMENT_PROMPT.format(
             count=count, target=int(target_seconds), min=int(lo), max=int(hi),
+            min_start=int(min_start),
             total=int(total_duration),
-            transcript=timestamped_transcript[:16000])
+            transcript=timestamped_transcript[:budget])
         obj = _loads(self._generate(prompt, want_json=True))
         if not obj:
             return []
@@ -107,6 +113,7 @@ class _BaseLLM:
                 e = min(total_duration, float(item["end"]))
             except (KeyError, TypeError, ValueError):
                 continue
+            s = max(s, min_start)      # respect the intro floor (clamp, don't drop)
             if e - s >= 3.0:
                 picked.append((s, e, str(item.get("topic", "")).strip()))
         picked.sort(key=lambda x: x[0])
@@ -421,34 +428,50 @@ _SEGMENT_PROMPT = """You are selecting the single best clip for a vertical short
 from a longer video. The video is {total} seconds long. Below is its transcript \
 with [mm:ss] timestamps.
 
-Pick the most self-contained, hook-strong, emotionally engaging span. It should \
-start on a strong hook and end on a satisfying or curiosity-driving note. The clip \
-MUST be between {min} and {max} seconds long (target about {target}s). Never pick a \
-span shorter than {min} seconds.
+HARD RULE — NEVER use the opening of the video. The first {min_start} seconds are \
+intro / greeting / setup / throat-clearing and are BANNED. Your clip MUST start at \
+or after {min_start} seconds (start >= {min_start}).
+
+Open on the SPICIEST moment you can find — a bold claim, a surprising or \
+controversial statement, a provocative question, or a strong emotional beat that \
+stops a scroller dead in the first 2 seconds. Pick the most self-contained, \
+hook-strong, emotionally engaging span. It MUST start ON that hook (never mid-setup) \
+and end on a satisfying or curiosity-driving note. The clip MUST be between {min} \
+and {max} seconds long (target about {target}s). Never pick a span shorter than \
+{min} seconds.
 
 Transcript:
 {transcript}
 
 Respond with ONLY a JSON object:
-{{"start": <seconds:number>, "end": <seconds:number>, "reason": "<short why>"}}"""
+{{"start": <seconds:number, must be >= {min_start}>, "end": <seconds:number>, \
+"reason": "<short why this is a spicy hook>"}}"""
 
 
 _MULTI_SEGMENT_PROMPT = """You are choosing {count} DISTINCT clips from a longer \
 video ({total} seconds) to cut into separate vertical shorts. Below is the \
 transcript with [mm:ss] timestamps.
 
+HARD RULE — NEVER use the opening of the video. The first {min_start} seconds are \
+intro / greeting / setup / throat-clearing and are BANNED. EVERY clip must start at \
+or after {min_start} seconds (start >= {min_start}).
+
 Pick {count} NON-OVERLAPPING segments. Each one must:
+- start on the SPICIEST hook available — a bold claim, a surprising or controversial \
+statement, a provocative question, or a strong emotional beat that stops a scroller \
+in the first 2 seconds (NEVER start mid-setup or on a calm intro),
 - cover a DIFFERENT topic / self-contained idea (no two shorts about the same point),
-- start on a strong hook and end on a satisfying or curiosity-driving beat,
+- end on a satisfying or curiosity-driving beat,
 - be between {min} and {max} seconds long (target ~{target}s), never under {min}.
-Spread them across the whole video so they don't overlap.
+Spread them across the video AFTER {min_start}s so they don't overlap.
 
 Transcript:
 {transcript}
 
 Respond with ONLY a JSON object:
 {{"segments": [
-  {{"start": <seconds:number>, "end": <seconds:number>, "topic": "<short topic>"}}
+  {{"start": <seconds:number, must be >= {min_start}>, "end": <seconds:number>, \
+"topic": "<short topic>"}}
 ]}}  - exactly {count} items, ordered by start time."""
 
 
@@ -458,10 +481,20 @@ video on {platform}. The content niche is: {niche}.
 Based on this transcript, write metadata that maximizes watch-through and shares. \
 Be punchy and native to the platform. Avoid clickbait lies. {language_rule}
 
+The caption MUST follow this exact two-part pattern (it performs best):
+1. HOOK — one short, provocative QUESTION about the video's core claim
+   (e.g. "هل الطاقة الكونية مجرد خيال أو حقيقة علمية؟").
+2. CTA — ONE short sentence teasing the answer, in the niche's framing
+   (e.g. "اكتشف الحقيقة من منظور إسلامي.").
+Nothing else in the caption: no emojis spam, no links, NO hashtags inside it.
+
+Hashtags: 3-5, each a specific TOPIC from this video (not generic like #video
+or #viral), in the same language as the caption.
+
 Transcript:
 {transcript}
 
 Respond with ONLY a JSON object:
 {{"title": "<<=80 chars, scroll-stopping>",
-  "caption": "<1-3 sentence caption, no hashtags inside>",
+  "caption": "<question hook>? <one-sentence CTA>",
   "hashtags": ["#tag1", "#tag2", "#tag3"]}}"""

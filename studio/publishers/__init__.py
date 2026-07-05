@@ -17,14 +17,16 @@ from .base import PublishResult, Publisher
 def get_publisher(platform: str, cfg: StudioConfig, vault=None) -> Publisher:
     platform = platform.lower()
     # Official Meta Graph API (when enabled) for IG + FB Page — reliable, no
-    # browser. Falls back to browser automation when the API isn't configured.
-    if getattr(cfg, "meta_api_enabled", False) and platform in ("facebook",
-                                                                "instagram"):
+    # browser, no CAPTCHA. Routed PER PLATFORM: each one uses the API only when
+    # its id is configured, so e.g. Facebook can go API while Instagram (not yet
+    # linked to the Page) keeps the working browser automation.
+    if getattr(cfg, "meta_api_enabled", False):
         from .meta_api import FacebookApiPublisher, InstagramApiPublisher
 
-        if platform == "facebook":
+        if platform == "facebook" and (cfg.facebook_page_id or "").strip():
             return FacebookApiPublisher(cfg, vault)
-        return InstagramApiPublisher(cfg, vault)
+        if platform == "instagram" and (cfg.instagram_business_id or "").strip():
+            return InstagramApiPublisher(cfg, vault)
     if platform == "youtube":
         from .youtube import YouTubePublisher
 

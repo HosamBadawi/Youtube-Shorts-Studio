@@ -59,15 +59,20 @@ def burn_captions(video_in: str, words: list[Word], out_path: str,
     # Run with cwd = output folder and reference the .ass by bare name: this
     # sidesteps the notorious Windows drive-colon/backslash escaping in the
     # ffmpeg filter argument.
+    # setsar=1 declares a square-pixel aspect ratio and +faststart puts the moov
+    # atom at the front — both are Meta API upload requirements for the FINAL
+    # file (undeclared SAR / trailing moov made IG reel containers ERROR).
     cmd = [
         "ffmpeg", "-y", "-i", str(Path(video_in).resolve()),
-        "-vf", f"ass={ass_path.name}",   # bare name + cwd avoids Windows escaping
+        "-vf", f"ass={ass_path.name},setsar=1",  # bare name + cwd: Windows escaping
         "-c:v", "libx264", "-crf", str(style.crf), "-preset", style.preset,
-        "-pix_fmt", "yuv420p", "-c:a", "copy", str(out.resolve()),
+        "-pix_fmt", "yuv420p", "-c:a", "copy",
+        "-movflags", "+faststart", str(out.resolve()),
     ]
     try:
         subprocess.run(cmd, check=True, cwd=str(ass_path.parent),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                       timeout=3600)
         return True
     except subprocess.CalledProcessError as exc:
         err = (exc.stderr or b"").decode("utf-8", "replace")[-400:]

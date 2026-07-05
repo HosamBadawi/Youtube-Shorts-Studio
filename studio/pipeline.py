@@ -79,11 +79,14 @@ class StudioPipeline:
             if job.duration > self.cfg.keep_whole_if_under_seconds and tr.available:
                 job.stage = "selecting highlight"
                 self.store.update(job)
+                floor = self._intro_floor(job.duration)
                 span = self.llm.pick_segment(
                     tr.timestamped(), job.duration, self.cfg.target_short_seconds,
-                    self.cfg.min_short_seconds, self.cfg.max_short_seconds)
-                if span is None:  # LLM failed -> sensible default window
-                    span = (0.0, min(self.cfg.target_short_seconds, job.duration))
+                    self.cfg.min_short_seconds, self.cfg.max_short_seconds,
+                    min_start=floor)
+                if span is None:  # LLM failed -> default window AFTER the intro
+                    span = (floor, min(floor + self.cfg.target_short_seconds,
+                                       job.duration))
                 span = _enforce_bounds(span, self.cfg.min_short_seconds,
                                        self.cfg.max_short_seconds, job.duration)
                 job.segment = span
@@ -137,6 +140,15 @@ class StudioPipeline:
         if cfg_lang.lower() not in {"auto", ""}:
             return cfg_lang
         return _LANG_NAMES.get((transcript_lang or "").lower(), "")
+
+    def _intro_floor(self, duration: float) -> float:
+        """Earliest second a short may start — NEVER cut from the long video's
+        intro. The larger of an absolute floor and a fraction of the runtime, but
+        never so large that a full-length clip wouldn't fit after it."""
+        floor = max(float(self.cfg.intro_skip_seconds),
+                    float(self.cfg.intro_skip_frac) * float(duration))
+        room = max(0.0, float(duration) - float(self.cfg.max_short_seconds))
+        return max(0.0, min(floor, room))
 
     # ======================================================================
     # PUBLISH
@@ -247,11 +259,17 @@ class StudioPipeline:
 
         stage("selecting highlights")
         segs: list[tuple[float, float, str]] = []
+        floor = self._intro_floor(duration)
         if tr.available:
             segs = self.llm.pick_segments(tr.timestamped(), duration, count,
-                                             target_len, min_len, max_len)
-        if not segs:  # no transcript / model -> at least one default window
-            segs = [(0.0, min(target_len, duration), "")]
+                                             target_len, min_len, max_len,
+                                             min_start=floor)
+        # GUARANTEE the requested count: the model routinely returns fewer than
+        # asked, which used to collapse to a single short. Top up with evenly-
+        # spread windows after the intro floor so "cut into N" always yields N.
+        segs = _fill_to_count(segs, count, duration, floor, target_len)
+        if not segs:  # empty transcript AND no room (very short source)
+            segs = [(floor, min(floor + target_len, duration), "")]
         segs = [(*_enforce_bounds((s, e), min_len, max_len, duration), topic)
                 for s, e, topic in segs]
         language = self._metadata_language(tr.language)
@@ -273,6 +291,10 @@ class StudioPipeline:
                 raw = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
                 self._reframe(seg_mp4, raw)
                 out = str(self.cfg.shorts_dir / f"{longstem}_{idx}.mp4")
+                if Path(out).exists():   # a previous batch from the same source —
+                    # don't silently overwrite its short; uniquify with the job id
+                    out = str(self.cfg.shorts_dir
+                              / f"{longstem}_{idx}_{job.id[:6]}.mp4")
                 self._apply_captions(job, tr.words, raw, out)
                 job.output_path = out
                 Path(seg_mp4).unlink(missing_ok=True)
@@ -308,8 +330,12 @@ class StudioPipeline:
             "-t", f"{duration:.2f}", "-c:v", "libx264", "-c:a", "aac",
             "-movflags", "+faststart", out,
         ]
+        # Bound the trim: a hung ffmpeg on short #2 must not wedge the whole batch.
+        # On timeout this raises -> caught per-short -> that short errors, the loop
+        # continues with the rest.
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL)
+                       stderr=subprocess.DEVNULL,
+                       timeout=max(300.0, duration * 6))
         return out
 
     def _reframe(self, src: str, out: str) -> None:
@@ -392,6 +418,34 @@ def _enforce_bounds(span: tuple[float, float], min_s: float, max_s: float,
     return (start, end)
 
 
+def _fill_to_count(segs, count, duration, floor, target_len):
+    """Guarantee up to ``count`` non-overlapping segments. Keep the model's picks
+    (good hooks) and top up the rest with evenly-spread windows AFTER the intro
+    floor. The LLM routinely returns fewer than asked (slow 35B / truncated JSON /
+    dedup); without this, "cut into N shorts" silently produced just the first."""
+    out = [(float(s), float(e), t) for s, e, t in segs
+           if float(e) - float(s) >= 3.0]
+    out.sort(key=lambda x: x[0])
+
+    def free(a, b):
+        return all(b <= s or a >= e for s, e, _ in out)
+
+    if len(out) < count:
+        usable = max(0.0, float(duration) - float(floor) - float(target_len))
+        step = usable / max(1, count)
+        # evenly-spaced starts, then half-step offsets, to fill gaps between picks
+        starts = [floor + step * k for k in range(count)]
+        starts += [floor + step * (k + 0.5) for k in range(count)]
+        for start in starts:
+            if len(out) >= count:
+                break
+            end = min(start + target_len, duration)
+            if end - start >= 3.0 and free(start, end):
+                out.append((start, end, ""))
+                out.sort(key=lambda x: x[0])
+    return out[:count]
+
+
 def _probe_duration(path: str) -> float:
     try:
         # A local path is made absolute so it can never be read as an ffprobe
@@ -400,7 +454,10 @@ def _probe_duration(path: str) -> float:
             path = os.path.abspath(path)
         cmd = ["ffprobe", "-v", "quiet", "-print_format", "json",
                "-show_format", path]
-        out = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True,
+                             timeout=60)
         return float(json.loads(out.stdout)["format"]["duration"])
-    except Exception:
+    except Exception as exc:
+        # Do NOT fail silently — a 0.0 duration produces broken 0-length shorts.
+        logger.warning("ffprobe duration failed for %s: %s", path, exc)
         return 0.0

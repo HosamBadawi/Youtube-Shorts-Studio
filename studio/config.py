@@ -84,6 +84,12 @@ class StudioConfig:
     max_short_seconds: float = 60.0
     # If the source is already <= this, skip segmentation and use it whole.
     keep_whole_if_under_seconds: float = 90.0
+    # NEVER cut a short from the opening of the long video — the intro/greeting/
+    # setup is boring. A short must start no earlier than this many seconds in...
+    intro_skip_seconds: float = 45.0
+    # ...or this fraction of the runtime, whichever is LARGER (so a 90-min video
+    # skips minutes of intro, not just 45s). Always leaves room for a full clip.
+    intro_skip_frac: float = 0.05
     # Default number of distinct shorts to cut from one long video (studio.shorts).
     shorts_per_video: int = 3
 
@@ -126,6 +132,10 @@ class StudioConfig:
     # token is stored ENCRYPTED in the vault, never here. Free for your OWN
     # accounts (Development Mode — no App Review).
     meta_api_enabled: bool = False
+    # The IG Content Publishing API rejects reels over ~90s (verified empirically:
+    # 85s FINISHED, 172s ERROR 2207077 — the app allows 3 min, the API does not).
+    # Longer reels automatically fall back to the browser publisher.
+    instagram_api_max_seconds: float = 90.0
     facebook_page_id: str = ""          # numeric Page id (graph: /me/accounts)
     instagram_business_id: str = ""     # IG Business Account id linked to the Page
     meta_graph_version: str = "v21.0"

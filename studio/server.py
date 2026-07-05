@@ -433,6 +433,17 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(404, "no preview yet")
         return FileResponse(job.output_path, media_type="video/mp4")
 
+    @app.get("/pub/{token}")
+    async def public_share(token: str):
+        # Deliberately NO auth: Meta's servers download the reel from here for
+        # the IG Content Publishing API and cannot log in. The 128-bit random,
+        # short-lived token (studio.public_share) is the secret.
+        from .public_share import resolve
+        path = resolve(token)
+        if not path or not Path(path).exists():
+            raise HTTPException(404, "unknown or expired share")
+        return FileResponse(path, media_type="video/mp4")
+
     # --- connections / accounts + health ----------------------------------
     # Connection health/login runs launch a browser; route them through the
     # 'net' pool so a slow check never head-of-line-blocks GPU render/publish.

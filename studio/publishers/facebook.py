@@ -35,16 +35,38 @@ class FacebookPublisher(PlaywrightPublisher):
         return "/login" not in page.url
 
     def _open_reel_composer(self, page, log) -> None:
-        """Open the Create-reel composer. The active Edge identity is the author;
-        with a Page URL configured we visit the Page first to be in Page context,
-        then open /reels/create (verified to compose as the Page 'Ummah Wasat')."""
+        """Open the Page's OWN reel composer so the reel is authored BY THE PAGE.
+
+        Going to /reels/create composes as the PERSONAL profile (verified: the
+        composer showed the personal avatar + a 'Friends' audience, and nothing
+        landed on the Page). The reliable route is the Page's composer row
+        (Live video | Photo/video | Reel) while in Manage-Page mode — clicking
+        'Reel' there authors as the Page. Falls back to /reels/create only when no
+        Page URL is configured."""
         url = (self.cfg.facebook_page_url or "").strip()
         if url:
-            log.append("entering Page context")
+            log.append("opening Page composer")
             try:
                 page.goto(url, wait_until="domcontentloaded")
-                page.wait_for_timeout(4000)
+                page.wait_for_timeout(5000)
                 _dismiss_cookies(page)
+                for getter in (
+                    lambda: page.get_by_role("button", name="Reel", exact=True),
+                    lambda: page.get_by_role("link", name="Reel", exact=True),
+                    lambda: page.get_by_text("Reel", exact=True),
+                    lambda: page.locator("[aria-label='Reel']"),
+                ):
+                    try:
+                        el = getter().first
+                        if el.count() > 0:
+                            el.click(timeout=8000)
+                            page.wait_for_timeout(6000)
+                            _dismiss_cookies(page)
+                            log.append("Page reel composer open (as the Page)")
+                            return
+                    except Exception:
+                        continue
+                log.append("Page 'Reel' button not found — falling back")
             except Exception:
                 pass
         page.goto(REELS_URL, wait_until="domcontentloaded")
@@ -132,9 +154,15 @@ def _wait_click(page, labels, tries: int = 6, gap: int = 1500) -> bool:
 
 
 def _wait_posted(page, timeout_s: float, log: list[str]) -> bool:
-    """Click Post and wait until the composer is actually left (= submitted). FB
-    keeps the button inert while the slow upload runs, so re-click until it takes,
-    or until a success toast appears. Generous timeout for slow upload speeds."""
+    """Click Post and wait until the composer is actually LEFT (= submitted). FB
+    keeps the button inert while the slow upload runs, so re-click until it takes.
+
+    The ONLY trustworthy signal is the composer navigating away from the reel
+    composer URL. A loose 'published' substring is NOT proof: it matched FB help
+    text (e.g. the "Videos are now reels / published" notice) and produced a
+    false success while the reel was never submitted. We therefore require either
+    a real navigation away, or an EXACT-match success toast — never a substring.
+    """
     deadline = time.time() + max(120.0, float(timeout_s))
     while time.time() < deadline:
         _click_text(page, ["Post", "Publish", "Share now"], timeout=6000)
@@ -147,10 +175,13 @@ def _wait_posted(page, timeout_s: float, log: list[str]) -> bool:
             log.append("left composer — submitted")
             page.wait_for_timeout(5000)        # settle before closing
             return True
-        for t in ("your reel", "has been shared", "Reel shared", "published"):
+        # Secondary, strict signal: an EXACT success toast (no substring match).
+        for t in ("Your reel is being shared.", "Your reel has been shared.",
+                  "Your reel is now live."):
             try:
-                if page.get_by_text(t, exact=False).count() > 0:
-                    log.append("posted toast seen")
+                if page.get_by_text(t, exact=True).count() > 0:
+                    log.append("posted toast seen (exact)")
+                    page.wait_for_timeout(4000)
                     return True
             except Exception:
                 pass
@@ -158,6 +189,9 @@ def _wait_posted(page, timeout_s: float, log: list[str]) -> bool:
 
 
 def _set_caption(page, caption: str) -> None:
+    # ONE atomic insert, never per-key typing — '#' keystrokes pop the hashtag
+    # autocomplete, which steals the caret mid-type and mangles the text (seen
+    # live on TikTok; same editor pattern here).
     for sel in ("div[contenteditable=true][role=textbox]",
                 "div[aria-label*='description'][contenteditable=true]",
                 "div[role=textbox]",
@@ -166,7 +200,10 @@ def _set_caption(page, caption: str) -> None:
             box = page.locator(sel).first
             if box.count() > 0:
                 box.click()
-                box.type(caption[:2150], delay=5)
+                page.keyboard.insert_text(caption[:2150])
+                page.wait_for_timeout(500)
+                # NO Escape: it can pop a "discard" dialog on the composer.
+                # insert_text is atomic, so no dropdown steals the caret anyway.
                 return
         except Exception:
             continue
