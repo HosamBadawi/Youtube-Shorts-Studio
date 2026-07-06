@@ -42,10 +42,12 @@ phone ──https──> Cloudflare tunnel ──> FastAPI (studio/)
 
 - **Python 3.11+**
 - **ffmpeg + ffprobe** on PATH — https://www.gyan.dev/ffmpeg/builds/ or `winget install Gyan.FFmpeg`
-- **Ollama** — https://ollama.com → pull a model that fits an 8 GB card:
+- **Ollama** — https://ollama.com → pull a model that fits an 8 GB card.
+  For Arabic content this one gives the best segment picks and copy:
   ```powershell
-  ollama pull qwen2.5:7b
+  ollama pull command-r7b-arabic
   ```
+  (`qwen2.5:7b` is a good multilingual alternative.)
 - **cloudflared** — https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/
   (drop `cloudflared.exe` on your PATH). Free, no account needed for quick mode.
 

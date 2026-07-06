@@ -23,7 +23,8 @@ cloudflared_bin: "cloudflared"
 # --- local AI ------------------------------------------------------------------
 ollama_url: "http://localhost:11434"
 # "auto" picks the most capable installed model THAT FITS the GPU (~<=6 GB
-# weights). Pin one for consistency, e.g. "qwen2.5:7b".
+# weights). Pin one for consistency — "command-r7b-arabic" gives the best
+# results for Arabic content; "qwen2.5:7b" is a good multilingual pick.
 ollama_model: "auto"
 ollama_enabled: true
 ollama_think: false

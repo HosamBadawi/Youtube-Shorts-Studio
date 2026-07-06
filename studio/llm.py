@@ -196,7 +196,7 @@ class OllamaClient(_BaseLLM):
             best = min(candidates, key=lambda m: float(m.get("size", 0) or 0))
             logger.warning(
                 "No installed Ollama model fits comfortably in VRAM; using the "
-                "smallest (%s). Consider `ollama pull qwen2.5:7b`.",
+                "smallest (%s). Consider `ollama pull command-r7b-arabic`.",
                 best.get("name"))
         return str(best.get("name"))
 

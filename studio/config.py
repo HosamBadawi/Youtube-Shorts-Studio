@@ -49,8 +49,9 @@ class StudioConfig:
     # --- local AI (Ollama, hosted on this PC) -------------------------------
     ollama_url: str = "http://localhost:11434"
     # "auto" = pick the most capable installed model THAT FITS the GPU (a 35B
-    # spills to system RAM on an 8 GB card and crawls). Or pin one, e.g.
-    # "llama3.1" / "qwen2.5:7b".
+    # spills to system RAM on an 8 GB card and crawls). Or pin one —
+    # "command-r7b-arabic" performs best on Arabic content; "qwen2.5:7b" is a
+    # good multilingual pick.
     ollama_model: str = "auto"
     ollama_enabled: bool = True
     # Leave False for thinking models (qwen3, deepseek-r1): they otherwise return

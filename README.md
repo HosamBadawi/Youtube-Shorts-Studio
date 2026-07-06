@@ -100,8 +100,10 @@ per-video SaaS fees.
 ## Quickstart
 
 **Prerequisites:** Python 3.11+, `ffmpeg`/`ffprobe` on PATH,
-[Ollama](https://ollama.com) with a model pulled (`ollama pull qwen2.5:7b`),
-optionally `cloudflared` for phone access.
+[Ollama](https://ollama.com) with a model pulled — for Arabic content
+**`ollama pull command-r7b-arabic`** gives the best results (Arabic-specialized,
+fits 8 GB); `qwen2.5:7b` is a solid multilingual alternative. Optionally
+`cloudflared` for phone access.
 
 ```bash
 python -m venv .venv && . .venv/Scripts/activate   # Windows: .venv\Scripts\Activate.ps1
