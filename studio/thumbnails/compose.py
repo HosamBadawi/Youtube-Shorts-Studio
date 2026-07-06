@@ -78,21 +78,22 @@ def make_thumbnail(frame_bgr, cutout_rgba, headline_text: str, template: str,
         canvas.alpha_composite(mid, (0, H - mid.height))
 
     # --- headline --------------------------------------------------------------
-    head = render_headline(headline_text, int(W * 0.92),
-                           base_size=170 * _SCALE // 2)
+    # base_size 330 at 2x ≈ 15% of the canvas width per line — the huge
+    # "MrBeast-scale" typography; auto-shrink still guarantees the fit.
+    head = render_headline(headline_text, int(W * 0.94), base_size=330)
     if head is not None:
         # contrast band behind the text
-        band_h = int(H * 0.30)
+        band_h = int(H * 0.34)
         band = Image.new("RGBA", (W, band_h), (0, 0, 0, 0))
         bd = ImageDraw.Draw(band)
         for i in range(band_h):
             bd.line([(0, i), (W, i)],
-                    fill=(0, 0, 0, int(150 * (1 - i / band_h))))
+                    fill=(0, 0, 0, int(165 * (1 - i / band_h))))
         canvas.alpha_composite(band, (0, 0))
 
         head = head.rotate(-2, expand=True, resample=Image.BICUBIC)
         hx = (W - head.width) // 2
-        hy = max(0, int(H * 0.14) - head.height // 2)
+        hy = max(int(H * 0.02), int(H * 0.15) - head.height // 2)
         canvas.alpha_composite(head, (hx, hy))
         # accent bar under the headline block
         bar_w = int(head.width * 0.7)

@@ -423,11 +423,16 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
 
     # --- thumbnails ---------------------------------------------------------
     @app.get("/api/job/{job_id}/thumbnail")
-    async def get_thumbnail(job_id: str, _: None = Depends(require_auth)):
+    async def get_thumbnail(job_id: str, download: int = 0,
+                            _: None = Depends(require_auth)):
         job = store.get(job_id)
         if not job or not job.thumb_path or not Path(job.thumb_path).exists():
             raise HTTPException(404, "no thumbnail yet")
+        # ?download=1 -> Content-Disposition attachment so phones offer
+        # "Save" instead of rendering inline (for manual upload in YT Studio).
+        filename = f"thumbnail_{job.id[:8]}.jpg" if download else None
         return FileResponse(job.thumb_path, media_type="image/jpeg",
+                            filename=filename,
                             headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/job/{job_id}/frames")

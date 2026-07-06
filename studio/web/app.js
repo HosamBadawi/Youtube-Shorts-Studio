@@ -307,8 +307,10 @@ function cardHtml(j) {
       <div class="thumb-box" data-role="thumb"><span>no thumbnail yet</span></div>
       <div class="thumb-actions">
         <button class="btn small" data-act="regen">↻ Regenerate</button>
-        <button class="btn small" data-act="frames">🖼 Pick frame</button>
+        <button class="btn small" data-act="frames">🖼 Frame</button>
         <button class="btn small" data-act="headline">✎ Headline</button>
+        <a class="btn small disabled" data-act="dl"
+           href="/api/job/${j.id}/thumbnail?download=1">⬇ Save</a>
       </div>
       <div data-role="framestrip"></div>
     </div>
@@ -485,6 +487,7 @@ function updateCard(card, j) {
   if (j.has_thumb && !tb.querySelector("img")) {
     tb.innerHTML = `<img src="/api/job/${j.id}/thumbnail?t=${Date.now()}">`;
   }
+  card.querySelector("[data-act=dl]").classList.toggle("disabled", !j.has_thumb);
 
   // status line
   const st = card.querySelector("[data-role=status]");
