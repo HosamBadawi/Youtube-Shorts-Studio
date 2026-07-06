@@ -18,8 +18,8 @@ studio.yaml
 *_token.json
 *client_secret*.json
 
-# Local Claude settings (machine-specific)
-.claude/settings.local.json
+# Local dev-tool state (machine-specific)
+.claude/
 
 # Downloaded / produced media
 *.mp4
@@ -58,4 +58,3 @@ Thumbs.db
 *.pt
 *.onnx
 .cache/
-.claude/launch.json

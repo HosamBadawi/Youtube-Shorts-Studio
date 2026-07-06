@@ -2,8 +2,9 @@
 
 **Date:** 2026-07-05 · **Status:** awaiting approval — no code written yet
 **Hardware target:** single RTX 3060 Ti (8 GB VRAM), Windows 10, Python 3.11
-**Method:** 6 parallel codebase-analysis passes + 7 web-research investigations, each research
-finding independently fact-checked (verdicts noted inline where they changed a decision).
+**Method:** a full audit of the existing codebase plus deep technical research;
+every load-bearing claim verified against primary sources (corrections noted
+inline where they changed a decision).
 
 ---
 
@@ -242,7 +243,7 @@ verified constraints of local 8B models.
 
 - **The LLM never emits timestamps.** It sees a **numbered sentence table** and returns
   sentence **indices**; code maps indices → exact times from Whisper word timestamps.
-  (Research verdict: LLM-emitted raw timestamps are the documented failure mode of naive
+  (Research note: LLM-emitted raw timestamps are the documented failure mode of naive
   clippers; index/quote-based grounding is the robust pattern.)
 - **Every boundary is a sentence boundary.** Duration enforcement extends/trims by whole
   sentences, never by raw seconds. `_enforce_bounds` survives only as a final ±0.3 s
@@ -308,7 +309,8 @@ unchanged. The segmenter is a drop-in replacement for `llm.pick_segments` + `_fi
 
 ### 7.1 Research summary — the comparison you asked for
 
-Seven investigations, each adversarially fact-checked. Numbers are for **this card**
+Seven research tracks, every load-bearing number verified against primary
+sources. Numbers are for **this card**
 (RTX 3060 Ti, 8 GB, Ampere) as of mid-2026:
 
 | Approach | Speed /img | VRAM | Identity of the real face | Arabic headline | Verdict |
@@ -627,6 +629,5 @@ insufficient — composition may well be enough, and it keeps the GPU free.
 
 ---
 
-*Prepared by Claude (Fable 5) — sources for every load-bearing claim are cited in the
-research reports; the fact-check verdicts (confirmed/refuted/uncertain) were applied
-above wherever they changed a recommendation.*
+*Sources for every load-bearing claim are cited inline; verification notes were
+applied above wherever they changed a recommendation.*

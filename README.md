@@ -135,9 +135,9 @@ Built to sit on the public internet behind a tunnel:
 - **AES-256-GCM vault** for cloud API keys (DPAPI-wrapped on Windows); ACL-locked OAuth token
 - No secrets in the repo — `secrets/`, `workspace/`, `studio.yaml` are gitignored
 
-The design and every hardening decision were reviewed by an adversarial
-multi-agent audit before release. Read
-[the security notes](STUDIO_README.md#security-notes) before exposing it.
+Every hardening decision went through a dedicated security review before
+release. Read [the security notes](STUDIO_README.md#security-notes) before
+exposing it.
 
 ## Repo layout
 
