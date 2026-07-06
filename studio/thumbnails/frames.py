@@ -34,7 +34,12 @@ def extract_frame(video_path: str, t: float):
 def select_candidates(video_path: str, t0: float, t1: float, k: int = 5,
                       sample_fps: float = 2.0) -> list[tuple[float, object, float]]:
     """Return up to ``k`` ``(t, frame_bgr, score)`` candidates from
-    ``video_path`` within ``[t0, t1]``, best score first, temporally spread."""
+    ``video_path`` within ``[t0, t1]``, best score first, temporally spread.
+
+    Scoring runs on a downscaled copy and only ``(t, score)`` is kept —
+    holding 240 full-res BGR frames would be gigabytes on 1080p+ sources.
+    The winners are re-extracted at full resolution afterwards.
+    """
     try:
         import cv2  # type: ignore
     except Exception:
@@ -48,7 +53,7 @@ def select_candidates(video_path: str, t0: float, t1: float, k: int = 5,
 
     span = max(0.5, t1 - t0)
     stride = max(1.0 / sample_fps, span / _MAX_SAMPLES)
-    scored: list[tuple[float, object, float]] = []
+    scored: list[tuple[float, float]] = []  # (t, score) only
 
     cap = cv2.VideoCapture(video_path)
     try:
@@ -57,7 +62,10 @@ def select_candidates(video_path: str, t0: float, t1: float, k: int = 5,
             cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
             ok, frame = cap.read()
             if ok and frame is not None:
-                scored.append((t, frame, _score(cv2, detector, frame)))
+                h, w = frame.shape[:2]
+                if w > 854:  # score on ~480p — detector + Laplacian are fine
+                    frame = cv2.resize(frame, (854, int(h * 854 / w)))
+                scored.append((t, _score(cv2, detector, frame)))
             t += stride
     finally:
         cap.release()
@@ -69,18 +77,24 @@ def select_candidates(video_path: str, t0: float, t1: float, k: int = 5,
 
     if not scored:
         return []
-    if all(s[2] <= 0.002 for s in scored):
+    if all(s[1] <= 0.002 for s in scored):
         logger.info("no faces found in clip — falling back to sharpest frames")
 
     # best-first, but enforce temporal spacing so the 5 picks aren't twins
     min_spacing = span / (k * 2)
-    picked: list[tuple[float, object, float]] = []
-    for cand in sorted(scored, key=lambda x: -x[2]):
+    picked: list[tuple[float, float]] = []
+    for cand in sorted(scored, key=lambda x: -x[1]):
         if all(abs(cand[0] - p[0]) >= min_spacing for p in picked):
             picked.append(cand)
         if len(picked) >= k:
             break
-    return picked
+
+    out: list[tuple[float, object, float]] = []
+    for t, score in picked:
+        frame = extract_frame(video_path, t)  # full resolution
+        if frame is not None:
+            out.append((t, frame, score))
+    return out
 
 
 def _score(cv2, detector, frame) -> float:

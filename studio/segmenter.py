@@ -77,7 +77,9 @@ def _mask_indices(sentences: list[Sentence],
     """Sentences that overlap a junk range or end before the intro floor."""
     masked: set[int] = set()
     for s in sentences:
-        if s.end <= min_start:
+        # start < floor (not end <= floor): a sentence straddling the intro
+        # floor must not become a clip's opening.
+        if s.start < min_start:
             masked.add(s.idx)
             continue
         for a, b in junk:
@@ -222,9 +224,11 @@ def select_segments(llm, transcript, duration: float, count: int,
         return []
     logger.info("segmenter: %d sentences over %.0fs", len(sentences), duration)
 
+    # SponsorBlock coverage is crowd-sourced and often PARTIAL (one sponsor
+    # tag, no outro entry) — always run the cheap LLM edge-classification too
+    # and union the two.
     masked = _mask_indices(sentences, junk or [], min_start)
-    if not junk:
-        masked |= _classify_junk(llm, sentences)
+    masked |= _classify_junk(llm, sentences)
     logger.info("segmenter: %d sentence(s) masked as junk/intro", len(masked))
 
     # --- MAP: overlapping windows -> candidate clips -------------------------
@@ -326,19 +330,26 @@ def _validate(clips: list, sentences: list[Sentence], win: list[Sentence],
 def _snap_duration(sentences: list[Sentence], si: int, ei: int,
                    masked: set[int], min_s: float, max_s: float):
     """Grow/shrink [si, ei] by whole sentences until the span duration fits
-    [min_s, max_s]. Growth prefers extending the END (keeps the hook opening);
-    shrink always trims the tail. Returns (si, ei) or (None, None)."""
+    [min_s, max_s]. Growth prefers extending the END (keeps the hook
+    opening), but when the next end-sentence would overshoot max_s it falls
+    back to growing the START — long sentences otherwise get rejected even
+    though a valid whole-sentence span exists. Returns (si, ei) or (None,)*2."""
     last = len(sentences) - 1
 
     def dur(a: int, b: int) -> float:
         return sentences[b].end - sentences[a].start
 
+    def fits_after(a: int, b: int) -> bool:
+        return dur(a, b) <= max_s
+
     guard = 0
     while dur(si, ei) < min_s and guard < 500:
         guard += 1
-        if ei < last and (ei + 1) not in masked:
+        can_end = ei < last and (ei + 1) not in masked
+        can_start = si > 0 and (si - 1) not in masked
+        if can_end and (fits_after(si, ei + 1) or not can_start):
             ei += 1
-        elif si > 0 and (si - 1) not in masked:
+        elif can_start:
             si -= 1
         else:
             return None, None

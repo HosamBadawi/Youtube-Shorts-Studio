@@ -11,14 +11,18 @@ you own or have the right to use.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import shutil
 import socket
+import threading
 import urllib.parse
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_index_lock = threading.Lock()
 
 
 def is_url(s: str) -> bool:
@@ -57,14 +61,37 @@ def assert_safe_url(url: str, allowlist: list[str] | None = None) -> None:
 
 
 def next_index(folder: str | Path) -> int:
-    """Next free integer for sequential naming (1.mp4, 2.mp4, …) in ``folder``."""
+    """Next free integer for sequential naming (1.mp4, 2.mp4, …) in ``folder``.
+
+    Counts by the leading digits of the FULL name, not the stem, so in-flight
+    artifacts also reserve their number: yt-dlp's ``5.mp4.part`` (stem
+    "5.mp4") and our ``5.claim`` placeholders both block index 5.
+    """
     folder = Path(folder)
     nums = [0]
     if folder.exists():
         for p in folder.iterdir():
-            if p.is_file() and p.stem.isdigit():
-                nums.append(int(p.stem))
+            head = p.name.split(".", 1)[0]
+            if p.is_file() and head.isdigit():
+                nums.append(int(head))
     return max(nums) + 1
+
+
+@contextlib.contextmanager
+def claim_index(folder: str | Path):
+    """Atomically reserve the next index: two concurrent downloads (the net
+    pool has 2 workers) must never pick the same number. A ``<n>.claim``
+    placeholder holds the slot until the real file exists."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    with _index_lock:
+        idx = next_index(folder)
+        claim = folder / f"{idx}.claim"
+        claim.touch()
+    try:
+        yield idx
+    finally:
+        claim.unlink(missing_ok=True)
 
 
 def _progress_hook(d: dict) -> None:

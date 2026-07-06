@@ -75,7 +75,7 @@ class StudioPipeline:
         target_len = (self.cfg.target_short_seconds
                       if (min_s is None and max_s is None)
                       else (min_len + max_len) / 2.0)
-        from .downloader import download, is_url, next_index
+        from .downloader import claim_index, download, is_url
 
         def stage(s: str, percent: float | None = None,
                   note: str | None = None) -> None:
@@ -96,11 +96,11 @@ class StudioPipeline:
             from .sponsorblock import extract_video_id
             video_id = extract_video_id(source)
             stage("downloading video", 2)
-            idx = next_index(self.cfg.library_path)  # 1.mp4, 2.mp4, …
-            source = download(source, str(self.cfg.library_path),
-                              prefer_mp4=self.cfg.download_prefer_mp4,
-                              name=str(idx),
-                              allowlist=self.cfg.download_host_allowlist)
+            with claim_index(self.cfg.library_path) as idx:  # 1.mp4, 2.mp4, …
+                source = download(source, str(self.cfg.library_path),
+                                  prefer_mp4=self.cfg.download_prefer_mp4,
+                                  name=str(idx),
+                                  allowlist=self.cfg.download_host_allowlist)
         stage("probing", 8)
         duration = _probe_duration(source)
 
@@ -152,7 +152,9 @@ class StudioPipeline:
         job_ids: list[str] = []
         used_titles: list[str] = []
         for idx, pick in enumerate(picks, 1):
-            base = 40 + 58 * (idx - 1) / len(picks)
+            # each short owns an equal slice of the 40..98 percent band
+            span = 58.0 / len(picks)
+            base = 40 + span * (idx - 1)
             job = self.store.create(source, batch_id=batch_id,
                                     topic=pick.topic, score=pick.score,
                                     reason=pick.reason)
@@ -164,7 +166,8 @@ class StudioPipeline:
             job.status = STATUS_PROCESSING
             self.store.update(job)
             try:
-                stage(f"rendering short {idx}/{len(picks)}", base + 8)
+                stage(f"rendering short {idx}/{len(picks)}",
+                      base + span * 0.15)
                 out = str(self.cfg.shorts_dir / f"{longstem}_{idx}.mp4")
                 if Path(out).exists():   # a previous batch from the same
                     # source — don't silently overwrite; uniquify with job id
@@ -175,7 +178,8 @@ class StudioPipeline:
                 if self.llm.available():
                     job.stage = f"short {idx}: writing the copy"
                     self.store.update(job)
-                    stage(f"short {idx}/{len(picks)}: writing copy", base + 38)
+                    stage(f"short {idx}/{len(picks)}: writing copy",
+                          base + span * 0.65)
                     meta = self.llm.generate_copy(
                         job.transcript or pick.topic, niche, language,
                         avoid_titles=used_titles)
@@ -186,7 +190,8 @@ class StudioPipeline:
                 if self.cfg.thumbs_enabled:
                     job.stage = f"short {idx}: composing thumbnail"
                     self.store.update(job)
-                    stage(f"short {idx}/{len(picks)}: thumbnail", base + 48)
+                    stage(f"short {idx}/{len(picks)}: thumbnail",
+                          base + span * 0.85)
                     self._make_thumbnail(job, source)
 
                 job.status = STATUS_READY
@@ -279,6 +284,11 @@ class StudioPipeline:
                       ) -> None:
         span = job.segment or (0.0, job.duration or _probe_duration(source))
         start, end = span
+        # All intermediates are declared up front so the finally can sweep
+        # whatever a mid-chain failure left behind.
+        raw_path = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
+        captioned = str(self.cfg.rendered_dir / f"{job.id}_cap.mp4")
+        overlaid = str(self.cfg.rendered_dir / f"{job.id}_sub.mp4")
         seg_path = self._trim(source, job.id, span)
         local_words = _offset_words(words, start, end)
         seg_dur = end - start
@@ -312,11 +322,9 @@ class StudioPipeline:
             # 2. face-tracked 9:16 reframe ------------------------------------
             job.stage = "reframing to 9:16"
             self.store.update(job)
-            raw_path = str(self.cfg.rendered_dir / f"{job.id}_raw.mp4")
             self._reframe(seg_path, raw_path)
 
             # 3. karaoke captions ---------------------------------------------
-            captioned = str(self.cfg.rendered_dir / f"{job.id}_cap.mp4")
             self._apply_captions(job, local_words, raw_path, captioned)
 
             # 4. subscribe-reminder overlay ------------------------------------
@@ -325,7 +333,6 @@ class StudioPipeline:
                 from .subscribe import apply_overlay
                 job.stage = "adding subscribe reminder"
                 self.store.update(job)
-                overlaid = str(self.cfg.rendered_dir / f"{job.id}_sub.mp4")
                 if apply_overlay(self.cfg, captioned, overlaid):
                     Path(captioned).unlink(missing_ok=True)
                     final = overlaid
@@ -333,7 +340,11 @@ class StudioPipeline:
             shutil.move(final, out_path)
             job.output_path = out_path
         finally:
-            Path(seg_path).unlink(missing_ok=True)
+            # sweep every intermediate a failure may have stranded
+            for p in (seg_path, str(self.cfg.incoming_dir /
+                                    f"{job.id}_cut.mp4"),
+                      raw_path, captioned, overlaid):
+                Path(p).unlink(missing_ok=True)
 
     def _make_thumbnail(self, job: Job, source: str) -> None:
         """Compose the thumbnail from the ORIGINAL source frames (full
@@ -351,24 +362,27 @@ class StudioPipeline:
     def rebuild_thumbnail(self, job_id: str, frame_t: float | None = None,
                           headline: str | None = None,
                           template: str | None = None) -> None:
-        """Server-triggered recomposition (runs on the worker thread)."""
+        """Server-triggered recomposition (runs on the worker thread).
+        Writes ONLY the columns it owns — an upload may finish concurrently
+        on the publisher thread and must not be clobbered."""
         job = self.store.get(job_id)
         if not job:
             return
-        job.stage = "recomposing thumbnail"
-        self.store.update(job)
+        self.store.patch(job_id, stage="recomposing thumbnail")
         try:
             from .thumbnails import rebuild_thumbnail
             path = rebuild_thumbnail(self.cfg, job.id, headline=headline,
                                      frame_t=frame_t, template=template)
             if path:
-                job.thumb_path = path
+                self.store.patch(job_id, thumb_path=path)
                 if headline is not None:
-                    job.meta.thumbnail_headline = headline
+                    fresh = self.store.get(job_id)
+                    if fresh:
+                        fresh.meta.thumbnail_headline = headline
+                        self.store.patch_meta(job_id, fresh.meta)
         except Exception:
             logger.warning("thumbnail rebuild failed", exc_info=True)
-        job.stage = ""
-        self.store.update(job)
+        self.store.patch(job_id, stage="")
 
     def regenerate_copy(self, job: Job, niche: str = "") -> VideoMeta:
         """Redraft title/description/headline for one short (server path)."""
@@ -376,7 +390,7 @@ class StudioPipeline:
         meta = self.llm.generate_copy(job.transcript, niche, language)
         if meta:
             job.meta = meta
-            self.store.update(job)
+            self.store.patch_meta(job.id, meta)
         return job.meta
 
     def _metadata_language(self, transcript_lang: str) -> str:
@@ -400,34 +414,51 @@ class StudioPipeline:
     # UPLOAD (YouTube only)
     # ======================================================================
     def upload_job(self, job: Job, *, embed_thumb: bool | None = None) -> Job:
+        """Runs on the single-slot publisher pool. The endpoint's checks are
+        check-then-queue, so everything is RE-validated here on a fresh row —
+        a double-tap or a second job queued behind an in-flight upload must
+        not slip past the status / one_per_day gates."""
+        import json as _json
+
         from .publishers import get_publisher
         from .publishers.base import PublishResult
 
-        job.status = STATUS_PUBLISHING
-        job.stage = "uploading to YouTube"
-        self.store.update(job)
+        fresh = self.store.get(job.id)
+        if not fresh or not fresh.output_path:
+            return job
+        already = (fresh.results or {}).get("youtube", {})
+        if self.cfg.one_per_day and self.store.published_today() \
+                and not already.get("ok"):
+            self.store.patch(job.id, status=STATUS_DONE, stage="",
+                             results_json=_json.dumps({"youtube": {
+                                 "platform": "youtube", "ok": False,
+                                 "error": "already uploaded today "
+                                          "(one_per_day is on)"}}))
+            return fresh
+        job = fresh
+        self.store.patch(job.id, status=STATUS_PUBLISHING,
+                         stage="uploading to YouTube")
 
         embed = (self.cfg.embed_thumb_first_frame
                  if embed_thumb is None else embed_thumb)
         upload_path = job.output_path
         temp_embed = ""
         if embed and job.thumb_path and Path(job.thumb_path).exists():
-            job.stage = "baking thumbnail into the first frame"
-            self.store.update(job)
+            self.store.patch(job.id,
+                             stage="baking thumbnail into the first frame")
+            temp_embed = str(self.cfg.rendered_dir / f"{job.id}_upload.mp4")
             try:
-                temp_embed = str(self.cfg.rendered_dir
-                                 / f"{job.id}_upload.mp4")
                 _embed_first_frame(job.output_path, job.thumb_path,
                                    temp_embed)
                 upload_path = temp_embed
             except Exception:
                 logger.warning("first-frame embed failed — uploading the "
                                "original", exc_info=True)
+                Path(temp_embed).unlink(missing_ok=True)  # partial encode
                 temp_embed = ""
                 upload_path = job.output_path
 
-        job.stage = "uploading to YouTube"
-        self.store.update(job)
+        self.store.patch(job.id, stage="uploading to YouTube")
         try:
             pub = get_publisher("youtube", self.cfg, self.vault)
             result = pub.publish(upload_path, job.meta,
@@ -440,31 +471,38 @@ class StudioPipeline:
                 Path(temp_embed).unlink(missing_ok=True)
 
         job.results["youtube"] = result.to_dict()
-        job.youtube_id = result.video_id
-        job.thumb_api = result.thumb
+        output_path = job.output_path
         if result.ok:
             self.store.mark_published_today(job.id)
             if self.cfg.move_uploaded_on_success:
-                self._move_to_uploaded(job)
+                output_path = self._move_to_uploaded(job.output_path)
+        # Narrow write: a concurrent thumbnail rebuild or meta save owns the
+        # other columns.
+        self.store.patch(job.id, status=STATUS_DONE, stage="",
+                         youtube_id=result.video_id, thumb_api=result.thumb,
+                         output_path=output_path,
+                         results_json=_json.dumps(job.results))
         job.status = STATUS_DONE
-        job.stage = ""
-        self.store.update(job)
         return job
 
-    def _move_to_uploaded(self, job: Job) -> None:
-        """After a short is uploaded, move its file into the uploaded/ folder."""
-        src = Path(job.output_path)
+    def _move_to_uploaded(self, output_path: str) -> str:
+        """After a short is uploaded, move its file into the uploaded/ folder.
+        Returns the (possibly unchanged) path."""
+        src = Path(output_path)
         if not src.exists():
-            return
+            return output_path
         self.cfg.uploaded_dir.mkdir(parents=True, exist_ok=True)
         dest = self.cfg.uploaded_dir / src.name
         try:
+            if dest.resolve() == src.resolve():
+                return output_path  # re-upload: already in uploaded/
             if dest.exists():
                 dest.unlink()
             shutil.move(str(src), str(dest))
-            job.output_path = str(dest)
+            return str(dest)
         except OSError as exc:  # pragma: no cover
             logger.warning("could not move %s to uploaded/: %s", src, exc)
+            return output_path
 
     # ======================================================================
     # helpers
@@ -481,9 +519,13 @@ class StudioPipeline:
             "-movflags", "+faststart", out,
         ]
         # Bound the trim: a hung ffmpeg on short #2 must not wedge the batch.
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL,
-                       timeout=max(300.0, duration * 6))
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL,
+                           timeout=max(300.0, duration * 6))
+        except Exception:
+            Path(out).unlink(missing_ok=True)  # partial encode
+            raise
         return out
 
     def _reframe(self, src: str, out: str) -> None:

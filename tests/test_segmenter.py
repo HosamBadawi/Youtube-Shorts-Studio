@@ -155,6 +155,34 @@ def test_intro_floor_masks_early_sentences():
     assert picks == []  # clip entirely inside the intro floor
 
 
+def test_snap_grows_start_when_end_overshoots():
+    # Sentences: 0-13, 13-26, 26-39 then a LONG one 39-85 (46s). A pick on
+    # [26,39] (13s) with min=50/max=60 cannot extend forward (39->85 = 59s?
+    # no: 26->85 = 59 fits! use a longer tail) — craft: tail 39-100 (61s
+    # overshoot). Growth must fall back to extending the START.
+    spans = [(0, 13), (13, 26), (26, 39), (39, 100)]
+    words = []
+    for a, b in spans:
+        n = 5
+        step = (b - a) / n
+        for i in range(n):
+            t = a + step * i
+            txt = f"s{a}w{i}" + ("." if i == n - 1 else "")
+            words.append(Word(t, t + step, txt))  # contiguous: no gap splits
+    sents = build_sentences(words)
+    assert len(sents) == 4
+    llm = FakeLLM(clips=[{"start_idx": 2, "end_idx": 2,
+                          "hook_quote": sents[2].text, "topic": "t",
+                          "score": 60, "reason": "r"}])
+    picks = select_segments(llm, Transcript(words), duration=100.0, count=1,
+                            min_s=30, max_s=45)
+    # forward growth would be 26->100 (74s, overshoot); start-growth gives
+    # 13->39 (26s, still short) then 0->39 (39s) — valid.
+    assert len(picks) == 1
+    assert picks[0].start == sents[0].start
+    assert 30 <= picks[0].end - picks[0].start <= 46
+
+
 # --- sponsorblock ------------------------------------------------------------
 def test_extract_video_id_forms():
     vid = "dQw4w9WgXcQ"

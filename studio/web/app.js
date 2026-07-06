@@ -267,7 +267,11 @@ async function loadShorts() {
   if (!list.children.length) list.innerHTML = `<div class="skel"></div><div class="skel"></div>`;
   let r;
   try { r = await api("/api/shorts"); }
-  catch (e) { list.innerHTML = ""; return; }
+  catch (e) {
+    // transient failure: keep existing cards; only clear the skeletons
+    list.querySelectorAll(".skel").forEach((s) => s.remove());
+    return;
+  }
   const jobs = r.shorts || [];
   list.querySelectorAll(".skel").forEach((s) => s.remove());
   $("#shorts-empty").classList.toggle("hidden", jobs.length > 0);
@@ -350,16 +354,17 @@ function wireCard(card, j0) {
       `${F("title").value.length}/100`;
   });
 
+  const saveMeta = () => jpost(`/api/job/${id}/meta`, {
+    title: F("title").value,
+    description: F("description").value,
+    hashtags: F("hashtags").value.split(/\s+/).filter(Boolean),
+    thumbnail_headline: F("headline").value,
+  });
+  card._saveMeta = saveMeta;
+
   card.querySelector("[data-act=save]").onclick = async () => {
-    try {
-      await jpost(`/api/job/${id}/meta`, {
-        title: F("title").value,
-        description: F("description").value,
-        hashtags: F("hashtags").value.split(/\s+/).filter(Boolean),
-        thumbnail_headline: F("headline").value,
-      });
-      toast("Saved");
-    } catch (e) { toast(e.message); }
+    try { await saveMeta(); toast("Saved"); }
+    catch (e) { toast(e.message); }
   };
 
   card.querySelector("[data-act=ai]").onclick = async (e) => {
@@ -414,8 +419,8 @@ async function uploadJob(card, id) {
   const privacy = card.querySelector("[data-role=privacy]").value;
   btn.disabled = true;
   try {
-    // auto-save edits first so what you see is what uploads
-    card.querySelector("[data-act=save]").click();
+    // save edits FIRST (awaited) so what you see is what uploads
+    await card._saveMeta();
     await jpost(`/api/job/${id}/upload`, {
       privacy, embed_thumb: STATE.status.embed_thumb,
     });
@@ -424,6 +429,11 @@ async function uploadJob(card, id) {
   } catch (e) {
     toast(e.message);
     btn.disabled = false;
+    // a failed POST must not stall the upload-all queue
+    if (STATE.uploadQueue.length && STATE.uploadQueue[0] === id) {
+      STATE.uploadQueue.shift();
+      runUploadQueue();
+    }
   }
 }
 
@@ -443,7 +453,13 @@ function updateCard(card, j) {
     fillFields(card, j.meta);
     card.dataset.filled = "1";
   }
-  if (j.privacy) card.querySelector("[data-role=privacy]").value = j.privacy;
+  // set the privacy select ONCE (stored value, else the server default) —
+  // re-setting on every poll tick would clobber an in-progress selection
+  if (!card.dataset.privSet) {
+    card.querySelector("[data-role=privacy]").value =
+      j.privacy || STATE.status.default_privacy || "public";
+    card.dataset.privSet = "1";
+  }
 
   // badges
   const badges = [];
@@ -463,13 +479,11 @@ function updateCard(card, j) {
     };
   }
 
-  // thumbnail
+  // thumbnail: initial load here; refreshes after a rebuild are handled by
+  // pollJob's settled-state hook (cache-busted)
   const tb = card.querySelector("[data-role=thumb]");
-  if (j.has_thumb && tb.dataset.v !== String(j.has_thumb) + (j.stage || "")) {
-    if (!j.stage) {
-      tb.innerHTML = `<img src="/api/job/${j.id}/thumbnail?t=${Date.now()}">`;
-      tb.dataset.v = String(j.has_thumb);
-    }
+  if (j.has_thumb && !tb.querySelector("img")) {
+    tb.innerHTML = `<img src="/api/job/${j.id}/thumbnail?t=${Date.now()}">`;
   }
 
   // status line
@@ -617,14 +631,20 @@ $("#yt-check").onclick = async () => {
   out.textContent = "checking…";
   try {
     const r = await jpost("/api/connections/youtube/health", {});
+    let ticks = 0;
     const poll = setInterval(async () => {
-      const s = await api(`/api/connections/run/${r.run_id}`);
-      if (!s.done) return;
-      clearInterval(poll);
-      const res = s.result || {};
-      out.textContent = s.error ? `✗ ${s.error}`
-        : (res.ok ? `✓ ${res.detail}` : `✗ ${res.detail}`);
-      loadYouTube();
+      try {
+        const s = await api(`/api/connections/run/${r.run_id}`);
+        if (!s.done && ++ticks < 40) return;
+        clearInterval(poll);
+        const res = s.result || {};
+        out.textContent = s.error ? `✗ ${s.error}`
+          : (res.ok ? `✓ ${res.detail}` : `✗ ${res.detail || "timed out"}`);
+        loadYouTube();
+      } catch (e) {
+        clearInterval(poll);   // never leak the interval on 401/network errors
+        out.textContent = e.message;
+      }
     }, 1500);
   } catch (e) { out.textContent = e.message; }
 };

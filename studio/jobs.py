@@ -190,6 +190,41 @@ class JobStore:
         return bool(row and row["n"])
 
     # --- update -------------------------------------------------------------
+    _PATCHABLE = {"status", "stage", "error", "output_path", "thumb_path",
+                  "thumb_api", "youtube_id", "privacy", "results_json",
+                  "meta_json"}
+
+    def patch(self, job_id: str, **fields) -> None:
+        """Narrow column update. Concurrent actors (render worker, thumbnail
+        rebuild, upload) each own disjoint columns — patching only what they
+        changed prevents a stale full-row snapshot from clobbering the rest."""
+        cols = {k: v for k, v in fields.items() if k in self._PATCHABLE}
+        if not cols:
+            return
+        sets = ", ".join(f"{k}=?" for k in cols)
+        with self._lock, self._conn() as c:
+            c.execute(f"UPDATE jobs SET {sets} WHERE id=?",
+                      (*cols.values(), job_id))
+
+    def patch_meta(self, job_id: str, meta: VideoMeta) -> None:
+        self.patch(job_id, meta_json=json.dumps(meta.to_dict()))
+
+    def reconcile_interrupted(self) -> int:
+        """Called once at boot: a hard kill mid-generation leaves batches
+        done=0 and jobs stuck 'processing'/'publishing' with no thread behind
+        them — mark them failed so the UI stops polling ghosts."""
+        with self._lock, self._conn() as c:
+            a = c.execute(
+                "UPDATE jobs SET status=?, stage='', error=?"
+                " WHERE status IN (?, ?, ?)",
+                (STATUS_ERROR, "interrupted by a server restart",
+                 STATUS_NEW, STATUS_PROCESSING, STATUS_PUBLISHING)).rowcount
+            b = c.execute(
+                "UPDATE batches SET done=1, error=?"
+                " WHERE done=0",
+                ("interrupted by a server restart",)).rowcount
+        return (a or 0) + (b or 0)
+
     def update(self, job: Job) -> None:
         with self._lock, self._conn() as c:
             c.execute(

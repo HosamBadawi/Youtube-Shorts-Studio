@@ -67,9 +67,13 @@ def fetch_junk_segments(video_id: str, timeout: float = 4.0
 
     spans: list[tuple[float, float]] = []
     for video in body if isinstance(body, list) else []:
-        if video.get("videoID") != video_id:
+        # The schema is crowd-served: guard every level, never propagate.
+        if not isinstance(video, dict) or video.get("videoID") != video_id:
             continue
-        for seg in video.get("segments", []) or []:
+        segments = video.get("segments") or []
+        for seg in segments if isinstance(segments, list) else []:
+            if not isinstance(seg, dict):
+                continue
             span = seg.get("segment") or []
             try:
                 s, e = float(span[0]), float(span[1])

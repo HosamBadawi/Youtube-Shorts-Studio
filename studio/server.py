@@ -82,6 +82,12 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     cfg.ensure_dirs()
     load_llm_selection(cfg)
     store = JobStore(cfg.db_path)
+    # A previous hard kill leaves jobs 'processing' and batches un-done with
+    # no thread behind them — mark them failed so the UI stops polling ghosts.
+    orphans = store.reconcile_interrupted()
+    if orphans:
+        logger.warning("marked %d interrupted job(s)/batch(es) from a "
+                       "previous run as failed", orphans)
     vault = CredentialVault(cfg)
     pipeline = StudioPipeline(cfg, store, vault)
     worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio")
@@ -222,7 +228,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     # --- download only (a standalone feature) ------------------------------
     @app.post("/api/download")
     async def start_download(url: str = Form(...), _: None = Depends(require_auth)):
-        from .downloader import download, next_index
+        from .downloader import claim_index, download
         if not url.strip():
             raise HTTPException(400, "no URL provided")
         did = uuid.uuid4().hex[:12]
@@ -243,11 +249,11 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
 
         def run() -> None:
             try:
-                idx = next_index(cfg.library_path)
-                path = download(url.strip(), str(cfg.library_path),
-                                prefer_mp4=cfg.download_prefer_mp4,
-                                name=str(idx), on_progress=prog,
-                                allowlist=cfg.download_host_allowlist)
+                with claim_index(cfg.library_path) as idx:
+                    path = download(url.strip(), str(cfg.library_path),
+                                    prefer_mp4=cfg.download_prefer_mp4,
+                                    name=str(idx), on_progress=prog,
+                                    allowlist=cfg.download_host_allowlist)
                 downloads[did]["file"] = Path(path).name
                 downloads[did]["stage"] = "done"
                 downloads[did]["percent"] = 100.0
@@ -288,14 +294,15 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         if source_type == "upload":
             if not file:
                 raise HTTPException(400, "no file uploaded")
-            from .downloader import next_index
+            from .downloader import claim_index
             suffix = Path(file.filename or "src.mp4").suffix or ".mp4"
             # Save uploaded long videos into the library as 1.mp4, 2.mp4, … so
             # their shorts follow the same naming (1_1.mp4, …).
-            dest = cfg.library_path / f"{next_index(cfg.library_path)}{suffix}"
-            with dest.open("wb") as fh:
-                while chunk := await file.read(1024 * 1024):
-                    fh.write(chunk)
+            with claim_index(cfg.library_path) as idx:
+                dest = cfg.library_path / f"{idx}{suffix}"
+                with dest.open("wb") as fh:
+                    while chunk := await file.read(1024 * 1024):
+                        fh.write(chunk)
             source = str(dest)
         elif source_type == "url":
             from .downloader import is_url
@@ -364,10 +371,11 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(404, "job not found")
         data = await request.json()
         meta = VideoMeta.from_dict(data)
-        meta.source = "manual" if job.meta.source == "manual" else "ollama+manual"
-        job.meta = meta
-        store.update(job)
-        return {"ok": True, "meta": job.meta.to_dict()}
+        meta.source = "manual" if job.meta.source == "manual" else "ai+manual"
+        # Narrow write: an in-flight upload on the publisher thread owns the
+        # status/results columns and must not be clobbered by this snapshot.
+        store.patch_meta(job.id, meta)
+        return {"ok": True, "meta": meta.to_dict()}
 
     @app.post("/api/job/{job_id}/generate")
     async def regenerate(job_id: str, request: Request,
@@ -401,9 +409,15 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             raise HTTPException(400, "invalid privacy")
         embed = body.get("embed_thumb")
         embed = cfg.embed_thumb_first_frame if embed is None else bool(embed)
+        if job.status == "publishing":
+            raise HTTPException(409, "this short is already uploading")
         if privacy:
             job.privacy = privacy
-            store.update(job)
+            store.patch(job.id, privacy=privacy)
+        # Flip the status BEFORE queueing so a double-tap (or a second client)
+        # 409s instead of queueing the same upload twice; upload_job
+        # re-validates on a fresh row anyway.
+        store.patch(job.id, status="publishing", stage="queued for upload")
         publisher.submit(pipeline.upload_job, job, embed_thumb=embed)
         return {"ok": True}
 
@@ -457,6 +471,9 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
                 job.id, frame_t=float(frame_t) if frame_t is not None else None,
                 headline=headline or None, template=template or None)
 
+        # Set the stage synchronously: the single worker slot may be busy for
+        # minutes, and the UI must see "queued" (non-terminal) right away.
+        store.patch(job.id, stage="queued: thumbnail rebuild")
         worker.submit(run)
         return {"ok": True}
 

@@ -33,16 +33,24 @@ _SECONDS = 2.6
 # ---------------------------------------------------------------------------
 def ensure_assets(assets_dir: Path, *, text: str = "اشترك",
                   subscribed_text: str = "تم الاشتراك", fps: int = 30,
-                  with_sound: bool = True) -> dict | None:
-    """Render (or reuse) the animation frames + bell sound. Returns the
-    manifest dict with absolute paths, or None if Pillow is unavailable."""
+                  with_sound: bool = True,
+                  duration: float = _SECONDS) -> dict | None:
+    """Render (or reuse) the animation frames + bell sound. The whole
+    timeline scales to ``duration`` so the ``subscribe_duration`` config knob
+    really controls time on screen. Returns the manifest dict with absolute
+    paths, or None if Pillow is unavailable."""
+    duration = max(1.5, float(duration))
     out_dir = Path(assets_dir) / "subscribe"
     manifest_path = out_dir / "manifest.json"
+    # Every input that changes the rendered assets is part of the cache key.
     params = {"version": _VERSION, "text": text,
-              "subscribed_text": subscribed_text, "fps": fps}
+              "subscribed_text": subscribed_text, "fps": fps,
+              "with_sound": bool(with_sound),
+              "duration": round(duration, 2)}
     try:
         m = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if all(m.get(k) == v for k, v in params.items()) and \
+        sound_ok = (not with_sound) or (out_dir / "bell.wav").exists()
+        if all(m.get(k) == v for k, v in params.items()) and sound_ok and \
                 (out_dir / (m["pattern"] % 0)).exists():
             return _absolutize(m, out_dir)
     except Exception:
@@ -55,9 +63,10 @@ def ensure_assets(assets_dir: Path, *, text: str = "اشترك",
         return None
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    n_frames = int(_SECONDS * fps)
+    n_frames = int(duration * fps)
+    scale = _SECONDS / duration  # map real time onto the 2.6s master timeline
     for i in range(n_frames):
-        frame = _draw_frame(i / fps, text, subscribed_text)
+        frame = _draw_frame((i / fps) * scale, text, subscribed_text)
         frame.save(out_dir / f"sub_{i:03d}.png")
 
     sound = None
@@ -263,13 +272,13 @@ def apply_overlay(cfg, video_in: str, video_out: str) -> bool:
     if duration < 8.0 or not width:
         return False
 
+    show = max(1.5, float(cfg.subscribe_duration))
     assets = ensure_assets(cfg.assets_dir, text=cfg.subscribe_text,
                            subscribed_text=cfg.subscribed_text,
-                           with_sound=cfg.subscribe_sound)
+                           with_sound=cfg.subscribe_sound, duration=show)
     if not assets:
         return False
 
-    show = float(cfg.subscribe_duration)
     t0 = max(1.0, min(duration * float(cfg.subscribe_at_frac),
                       duration - show - 0.5))
     t1 = t0 + show
@@ -286,7 +295,9 @@ def apply_overlay(cfg, video_in: str, video_out: str) -> bool:
            "-framerate", str(assets["fps"]), "-start_number", "0",
            "-i", pattern]
     if use_sound:
-        ms = int(t0 * 1000)
+        # the ding lands on the button CLICK (1.1s on the 2.6s master
+        # timeline, scaled to the configured duration)
+        ms = int((t0 + show * (1.1 / _SECONDS)) * 1000)
         cmd += ["-i", assets["sound_path"]]
         fc += (f";[2:a]volume=0.45,adelay={ms}|{ms}[ding];"
                f"[0:a][ding]amix=inputs=2:duration=first:normalize=0[a]")

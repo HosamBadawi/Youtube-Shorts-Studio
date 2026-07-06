@@ -152,8 +152,10 @@ def cut_video(src: str, out: str, intervals: list[tuple[float, float]], *,
     for i, (a, b) in enumerate(intervals):
         zf = (f",crop={cw}:{ch}:{cx}:{cy},scale={width}:{height}"
               if zoom_alternate and i % 2 == 1 else "")
+        # setsar=1 on EVERY segment: scale adjusts SAR to preserve DAR after
+        # the crop's even-rounding, and concat rejects mismatched SARs.
         parts.append(f"[0:v]trim=start={a:.3f}:end={b:.3f},"
-                     f"setpts=PTS-STARTPTS{zf}[v{i}]")
+                     f"setpts=PTS-STARTPTS{zf},setsar=1[v{i}]")
         concat_in.append(f"[v{i}]")
         if has_audio:
             fade_out = max(0.0, (b - a) - _FADE)
