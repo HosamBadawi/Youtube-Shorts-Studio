@@ -58,7 +58,9 @@ async function boot() {
   if (s.length_min) $("#gen-min").value = Math.round(s.length_min);
   if (s.length_max) $("#gen-max").value = Math.round(s.length_max);
   $("#pass-banner").classList.toggle("hidden", !s.needs_password_change);
-  go("create");
+  // deep link: /#shorts or /#settings opens that tab directly
+  const tab = location.hash.slice(1);
+  go(["create", "shorts", "settings"].includes(tab) ? tab : "create");
 }
 
 $("#login-form").onsubmit = async (e) => {

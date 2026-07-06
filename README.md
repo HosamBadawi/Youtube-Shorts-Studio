@@ -1,73 +1,107 @@
-# ▶️ YouTube Shorts Studio
+<p align="center">
+  <img src="docs/img/banner.png" alt="YouTube Shorts Studio" width="820">
+</p>
 
-**Turn one long YouTube video into several ready-to-upload Shorts — semantically cut, montage-paced, captioned, thumbnailed, and published — all on your own PC, all free.**
+<h1 align="center">YouTube Shorts Studio</h1>
 
-Paste a YouTube link into a phone-friendly web page and the pipeline does the rest:
+<p align="center">
+  <b>One long YouTube video in — several ready-to-upload Arabic Shorts out.</b><br>
+  Semantically cut, montage-paced, captioned, thumbnailed, and uploaded —<br>
+  all self-hosted on your own PC, all free, all driven from your phone.
+</p>
 
-1. **Download** the source (yt-dlp, aria2c-accelerated).
-2. **Transcribe** with Whisper `large-v3` (GPU) — word-level timestamps.
-3. **Find the best moments** with a local LLM (Ollama). Every short is one
-   *complete idea*: it opens on a hook and ends after the payoff, snapped to
-   sentence boundaries. Sponsor reads, intros and outros are masked
-   (crowd-sourced [SponsorBlock](https://sponsor.ajay.app) data + LLM
-   classification) and never end up in a clip. **The LLM never emits
-   timestamps** — it returns sentence indices that are resolved against the
-   Whisper word timings in code.
-4. **Cut the silences** — jump-cut montage with a subtle alternating punch-in
-   zoom; caption timings are remapped through the cuts so they stay in sync.
-5. **Reframe to 9:16** with a face-tracking, preservation-biased engine
-   ([`adaptive_reframe`](adaptive_reframe/README.md)).
-6. **Burn karaoke captions** — word-by-word highlight with real
-   **right-to-left Arabic** layout (most tools scramble Arabic word order;
-   this one positions every word itself).
-7. **Add a subscribe reminder** — an animated اشترك button with a bell ding,
-   generated programmatically (Pillow), burned in mid-short.
-8. **Write the copy** — a curiosity+result title, a description, hashtags and
-   a thumbnail headline, all from the local LLM.
-9. **Compose a thumbnail** — the best face frame is auto-picked and cut out
-   (the presenter's *real pixels*, never an AI face), placed on a bold
-   background under a huge Arabic headline. Downloadable to your phone, and
-   bakeable into the video's first frame.
-10. **Review & upload** from your phone (free Cloudflare tunnel): edit the
-    copy, swap the thumbnail frame, pick privacy, tap **Upload** — official
-    YouTube Data API v3.
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-web-009688?logo=fastapi&logoColor=white">
+  <img alt="Whisper" src="https://img.shields.io/badge/Whisper-large--v3-5A67D8">
+  <img alt="Ollama" src="https://img.shields.io/badge/LLM-Ollama%20(local)-000000">
+  <img alt="Platform" src="https://img.shields.io/badge/GPU-8GB%20friendly-76B900?logo=nvidia&logoColor=white">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
+</p>
 
+---
+
+## What it does
+
+Paste a YouTube link into a phone-friendly web page and the pipeline turns a long
+video into a batch of polished Shorts — each one a *complete idea* that opens on a
+hook and ends on its payoff, never a random mid-sentence cut.
+
+| | |
+|---|---|
+| 🎯 **Semantic segment selection** | A local LLM reads a sentence-numbered transcript and returns *indices* (never timestamps) — every cut lands on a sentence boundary. Intros, sponsor reads and outros are masked out. |
+| ✂️ **Silence-cut montage** | Dead air between words is removed with clean jump cuts and a subtle alternating punch-in zoom — that fast, addictive rhythm. Captions stay perfectly in sync. |
+| 🗣️ **Egyptian-Arabic karaoke captions** | Word-by-word highlight with correct **right-to-left** layout (most tools scramble Arabic word order — this one positions every word itself). |
+| 🔔 **Subscribe reminder** | An animated اشترك button with a bell "ding", generated programmatically and burned into every short. |
+| 🖼️ **AI thumbnails** | The best face frame is auto-picked and cut out — the presenter's *real pixels*, never an AI face — on a bold background under a huge Arabic headline. |
+| ✍️ **Auto copy** | Curiosity-driven title, description, hashtags and thumbnail headline, all from the local model. |
+| 📤 **One-tap upload** | Review on your phone, then upload straight to YouTube (official Data API v3). |
+
+<br>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/ui-create.png" alt="Create screen"></td>
+    <td width="50%"><img src="docs/img/ui-review.png" alt="Review screen"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Create</b> — paste a link, pick how many Shorts, generate</td>
+    <td align="center"><b>Review</b> — edit copy, reshape the thumbnail, upload</td>
+  </tr>
+</table>
+
+> **Note on the images.** The screenshots use synthetic, face-free demo data (a
+> silhouette stands in for the presenter) — the real app composites your actual
+> face from the video. Nothing here is a real person.
+
+### AI thumbnails — three built-in styles
+
+<p align="center"><img src="docs/img/thumbnails.png" alt="Thumbnail templates" width="720"></p>
+<p align="center"><i>blur · burst · flat — real face cutout + huge shaped-Arabic headline, 1080×1920, ready to publish</i></p>
+
+### The subscribe reminder, frame by frame
+
+<p align="center"><img src="docs/img/subscribe.png" alt="Subscribe animation" width="720"></p>
+<p align="center"><i>The pill slides in → a cursor clicks اشترك → it flips to تم الاشتراك with a bell chime — no stock footage, drawn in code.</i></p>
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[YouTube URL] -->|yt-dlp| B[Whisper large-v3<br/>word timestamps]
+    B --> C{semantic<br/>segmenter}
+    SB[SponsorBlock] -.junk mask.-> C
+    B -.LLM junk classify.-> C
+    C -->|per short| D[trim]
+    D --> E[silence-cut<br/>montage]
+    E --> F[face-tracked<br/>9:16 reframe]
+    F --> G[RTL karaoke<br/>captions]
+    G --> H[subscribe<br/>overlay]
+    H --> I[title · description<br/>· headline]
+    I --> J[compose<br/>thumbnail]
+    J --> K[[phone review]]
+    K -->|Data API v3| L[(YouTube)]
 ```
-YouTube URL ── yt-dlp ──► Whisper large-v3 (word timestamps)
-                              │
-              SponsorBlock ──►│◄── LLM junk classification
-                              ▼
-               semantic segmenter (map → validate → reduce,
-               sentence-snapped, honest when fewer clips exist)
-                              │  per short:
-                              ▼
-   trim ─► silence-cut montage ─► face-tracked 9:16 ─► RTL karaoke captions
-        ─► subscribe reminder ─► title/description/headline ─► thumbnail
-                              │
-                              ▼
-              phone review UI ─► YouTube Data API upload
-```
 
-## Why it's different
+**Why it's different from a naive clipper:** the LLM never guesses timestamps
+(they're resolved from Whisper word timings in code), boundaries snap to whole
+sentences, and "number of shorts" is a **maximum** — if only 3 of 5 requested
+segments are genuinely strong, you get 3 and the UI tells you why. Quality over
+padding.
 
-- **Semantic, not random** — no fixed-interval cutting, no mid-sentence
-  boundaries. If only 3 of the 5 requested clips are genuinely strong, you
-  get 3 and the UI tells you why (quality over padding).
-- **Real Arabic support end-to-end** — transcription, captions, titles,
-  thumbnail typography (shaped with `arabic-reshaper` + `python-bidi`,
-  bundled OFL fonts).
-- **Identity-safe thumbnails** — the face is a literal pixel cutout
-  ([rembg](https://github.com/danielgatis/rembg) / BiRefNet), never a
-  diffusion lookalike.
-- **Self-hosted & free** — your GPU, your models, your data. Runs on a
-  single 8 GB card (RTX 3060 Ti class): Whisper, a 7B LLM and the matting
-  model are scheduled so they never fight for VRAM.
+**Runs on one 8 GB GPU** (RTX 3060 Ti class): Whisper, a 7B Arabic LLM and the
+background-removal model are scheduled so they never fight for VRAM. No cloud, no
+per-video SaaS fees.
+
+---
 
 ## Quickstart
 
 **Prerequisites:** Python 3.11+, `ffmpeg`/`ffprobe` on PATH,
 [Ollama](https://ollama.com) with a model pulled (`ollama pull qwen2.5:7b`),
-optionally `cloudflared` for phone access and `aria2c` for faster downloads.
+optionally `cloudflared` for phone access.
 
 ```bash
 python -m venv .venv && . .venv/Scripts/activate   # Windows: .venv\Scripts\Activate.ps1
@@ -80,23 +114,30 @@ python -m studio.login_setup          # one-time YouTube OAuth (see guide)
 python -m studio                      # prints a local + tunnel URL for your phone
 ```
 
-Full setup guide (YouTube API credentials, tunnel modes, every config knob):
+Full setup (YouTube API credentials, tunnel modes, every config knob):
 **[STUDIO_README.md](STUDIO_README.md)**.
 
-CLI tools (no upload): `python -m studio.prepare --check` (environment
-doctor), `python -m studio.shorts <video-or-URL> --count 3` (batch to
-`workspace/shorts/`), `python -m studio.sample_modes <video>` (compare
-reframe looks).
+**CLI tools (no upload):** `python -m studio.prepare --check` (environment
+doctor) · `python -m studio.shorts <video-or-URL> --count 3` (batch to
+`workspace/shorts/`) · `python -m studio.sample_modes <video>` (compare reframe
+looks).
+
+---
 
 ## Security posture
 
-Designed to sit on the public internet behind a tunnel: password gate with
-per-install HMAC cookies and global login backoff, fail-closed startup on a
-default password, security headers + strict CSP, SSRF-guarded downloads
-(host allowlist + private-IP blocking), AES-256-GCM vault for cloud API keys
-(DPAPI-wrapped on Windows), ACL-locked OAuth token, and no secrets in the
-repo (`secrets/`, `workspace/`, `studio.yaml` are all gitignored). Read
-[STUDIO_README.md](STUDIO_README.md#security-notes) before exposing it.
+Built to sit on the public internet behind a tunnel:
+
+- Password gate with per-install **HMAC cookies** and **serialized login backoff + lockout**
+- **Fail-closed startup** — refuses to expose itself on a default/empty password
+- Strict **CSP** + security headers; every state-changing endpoint is auth-gated
+- **SSRF-guarded** downloads (host allowlist + private-IP blocking) and **upload size caps**
+- **AES-256-GCM vault** for cloud API keys (DPAPI-wrapped on Windows); ACL-locked OAuth token
+- No secrets in the repo — `secrets/`, `workspace/`, `studio.yaml` are gitignored
+
+The design and every hardening decision were reviewed by an adversarial
+multi-agent audit before release. Read
+[the security notes](STUDIO_README.md#security-notes) before exposing it.
 
 ## Repo layout
 
