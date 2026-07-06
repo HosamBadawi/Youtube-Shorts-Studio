@@ -1,121 +1,117 @@
-# 🎬 Daily Shorts Studio
+# ▶️ YouTube Shorts Studio
 
-**Turn one long video into several ready-to-post vertical Shorts — automatically, on your own PC.**
+**Turn one long YouTube video into several ready-to-upload Shorts — semantically cut, montage-paced, captioned, thumbnailed, and published — all on your own PC, all free.**
 
-Feed it a long video (a local file *or* a YouTube URL) and it will:
+Paste a YouTube link into a phone-friendly web page and the pipeline does the rest:
 
-1. **Download** the source (yt-dlp, optionally aria2c-accelerated) — or use a local file.
-2. **Transcribe** the audio with Whisper (`large-v3`, GPU-accelerated).
-3. **Split it into N distinct shorts** — a local LLM picks non-overlapping, self-contained segments, *each its own topic*.
-4. **Reframe** each segment to vertical **9:16** with an adaptive strategy (face-crop, blur-background, or a subject-tracked *crop + blur* hybrid).
-5. **Burn TikTok-style captions** — word-by-word highlight, with full **right-to-left Arabic** support (correct order, single-word highlight).
-6. **Write the post text** — title, caption, and hashtags in the video's own language.
-7. *(optional)* **Publish** to YouTube Shorts, Instagram, TikTok, and Facebook — driven from a phone-friendly web page over a free Cloudflare tunnel.
-
-Everything runs **locally and free**: Whisper + the LLM (via [Ollama](https://ollama.com)) run on your machine; the only "official API" used is YouTube's (free).
+1. **Download** the source (yt-dlp, aria2c-accelerated).
+2. **Transcribe** with Whisper `large-v3` (GPU) — word-level timestamps.
+3. **Find the best moments** with a local LLM (Ollama). Every short is one
+   *complete idea*: it opens on a hook and ends after the payoff, snapped to
+   sentence boundaries. Sponsor reads, intros and outros are masked
+   (crowd-sourced [SponsorBlock](https://sponsor.ajay.app) data + LLM
+   classification) and never end up in a clip. **The LLM never emits
+   timestamps** — it returns sentence indices that are resolved against the
+   Whisper word timings in code.
+4. **Cut the silences** — jump-cut montage with a subtle alternating punch-in
+   zoom; caption timings are remapped through the cuts so they stay in sync.
+5. **Reframe to 9:16** with a face-tracking, preservation-biased engine
+   ([`adaptive_reframe`](adaptive_reframe/README.md)).
+6. **Burn karaoke captions** — word-by-word highlight with real
+   **right-to-left Arabic** layout (most tools scramble Arabic word order;
+   this one positions every word itself).
+7. **Add a subscribe reminder** — an animated اشترك button with a bell ding,
+   generated programmatically (Pillow), burned in mid-short.
+8. **Write the copy** — a curiosity+result title, a description, hashtags and
+   a thumbnail headline, all from the local LLM.
+9. **Compose a thumbnail** — the best face frame is auto-picked and cut out
+   (the presenter's *real pixels*, never an AI face), placed on a bold
+   background under a huge Arabic headline. Downloadable to your phone, and
+   bakeable into the video's first frame.
+10. **Review & upload** from your phone (free Cloudflare tunnel): edit the
+    copy, swap the thumbnail frame, pick privacy, tap **Upload** — official
+    YouTube Data API v3.
 
 ```
-long video / URL
-      │  yt-dlp
-      ▼
-  Whisper large-v3 (GPU)  ──►  transcript + word timestamps
-      │
-      ▼  local LLM (Ollama)
-  N distinct segments (each its own topic)
-      │   for each segment:
-      ▼
-  ffmpeg trim ─► adaptive_reframe 9:16 ─► burn captions ─► LLM title/caption/hashtags
-      │
-      ▼
-  workspace/shorts/*.mp4  (+ a .txt with the post text)
+YouTube URL ── yt-dlp ──► Whisper large-v3 (word timestamps)
+                              │
+              SponsorBlock ──►│◄── LLM junk classification
+                              ▼
+               semantic segmenter (map → validate → reduce,
+               sentence-snapped, honest when fewer clips exist)
+                              │  per short:
+                              ▼
+   trim ─► silence-cut montage ─► face-tracked 9:16 ─► RTL karaoke captions
+        ─► subscribe reminder ─► title/description/headline ─► thumbnail
+                              │
+                              ▼
+              phone review UI ─► YouTube Data API upload
 ```
-
----
 
 ## Why it's different
 
-- **Multi-short, semantically split** — not just "clip the first 60s". The LLM reads the whole transcript and carves out several *distinct* shorts.
-- **Real Arabic support** — accurate transcription (`large-v3` + forced language) and **correct RTL captions** (most auto-caption tools scramble Arabic word order; this one positions each word so it doesn't).
-- **Adaptive 9:16 reframing** — a preservation-biased engine ([`adaptive_reframe`](adaptive_reframe/README.md)) that won't butcher the composition.
-- **Self-hosted & free** — your GPU, your models, your data. No per-video SaaS fees.
-
----
+- **Semantic, not random** — no fixed-interval cutting, no mid-sentence
+  boundaries. If only 3 of the 5 requested clips are genuinely strong, you
+  get 3 and the UI tells you why (quality over padding).
+- **Real Arabic support end-to-end** — transcription, captions, titles,
+  thumbnail typography (shaped with `arabic-reshaper` + `python-bidi`,
+  bundled OFL fonts).
+- **Identity-safe thumbnails** — the face is a literal pixel cutout
+  ([rembg](https://github.com/danielgatis/rembg) / BiRefNet), never a
+  diffusion lookalike.
+- **Self-hosted & free** — your GPU, your models, your data. Runs on a
+  single 8 GB card (RTX 3060 Ti class): Whisper, a 7B LLM and the matting
+  model are scheduled so they never fight for VRAM.
 
 ## Quickstart
 
-### 1. Prerequisites
-- **Python 3.11+**
-- **ffmpeg + ffprobe** on PATH
-- **[Ollama](https://ollama.com)** running locally, with a model pulled (e.g. `ollama pull command-r7b-arabic` or `ollama pull qwen2.5:7b`)
-- *(optional, for GPU)* an NVIDIA card; *(optional)* `aria2c` for faster downloads
+**Prerequisites:** Python 3.11+, `ffmpeg`/`ffprobe` on PATH,
+[Ollama](https://ollama.com) with a model pulled (`ollama pull qwen2.5:7b`),
+optionally `cloudflared` for phone access and `aria2c` for faster downloads.
 
-### 2. Install
 ```bash
 python -m venv .venv && . .venv/Scripts/activate   # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r requirements-studio.txt
 # GPU transcription (NVIDIA):
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12
+
+cp studio.example.yaml studio.yaml    # then edit — SET A STRONG app_password
+python -m studio.login_setup          # one-time YouTube OAuth (see guide)
+python -m studio                      # prints a local + tunnel URL for your phone
 ```
 
-### 3. Configure
-```bash
-cp studio.example.yaml studio.yaml      # then edit
-```
-Key settings: `whisper_model: large-v3`, `whisper_language` (e.g. `ar`), `ollama_model`, `reframe_mode` (`crop_blur` recommended), `shorts_per_video`.
+Full setup guide (YouTube API credentials, tunnel modes, every config knob):
+**[STUDIO_README.md](STUDIO_README.md)**.
 
-### 4. Make shorts (no upload)
-```bash
-# from a YouTube URL:
-python -m studio.shorts "https://www.youtube.com/watch?v=XXXX" --count 3 --niche "your topic"
+CLI tools (no upload): `python -m studio.prepare --check` (environment
+doctor), `python -m studio.shorts <video-or-URL> --count 3` (batch to
+`workspace/shorts/`), `python -m studio.sample_modes <video>` (compare
+reframe looks).
 
-# from a local file:
-python -m studio.shorts "path/to/long_video.mp4" --count 5 --model command-r7b-arabic
-```
-Each short lands in `workspace/shorts/` as an `.mp4` plus a `.txt` with its title/caption/hashtags.
+## Security posture
 
-Other entry points:
-```bash
-python -m studio.prepare --check                 # environment doctor
-python -m studio.prepare "video_or_URL"          # single best short, pick technique
-python -m studio.sample_modes "video" --modes face_focus,crop_blur   # compare looks
-```
-
-### 5. (Optional) Phone web app + publishing
-See **[STUDIO_README.md](STUDIO_README.md)** for the full guide: the FastAPI web UI, the free Cloudflare tunnel so you can drive it from your phone, the one-time platform logins, and the YouTube API setup.
-
----
-
-## Reframing techniques
-
-| Mode | Look |
-|------|------|
-| `face_focus` | Tight subject crop that fills the frame |
-| `crop_blur` *(recommended)* | Subject-tracked crop **+** blurred margins — keeps on-screen graphics, subject stays big |
-| `blur_background` | Full scene centred over a blurred fill |
-| `auto` | The engine classifies each clip and picks a strategy |
-
-Set your default with `reframe_mode:` in `studio.yaml`, or per-run with `--mode`.
-
-## Models
-
-Any [Ollama](https://ollama.com) model works (`--model NAME`). Good picks:
-- **`command-r7b-arabic`** — Arabic-specialised, fits 8 GB VRAM, fast.
-- **`qwen2.5:7b` / `aya-expanse:8b`** — strong multilingual, fast.
-- A large model (30B+) — higher quality, slower if it spills past your VRAM.
+Designed to sit on the public internet behind a tunnel: password gate with
+per-install HMAC cookies and global login backoff, fail-closed startup on a
+default password, security headers + strict CSP, SSRF-guarded downloads
+(host allowlist + private-IP blocking), AES-256-GCM vault for cloud API keys
+(DPAPI-wrapped on Windows), ACL-locked OAuth token, and no secrets in the
+repo (`secrets/`, `workspace/`, `studio.yaml` are all gitignored). Read
+[STUDIO_README.md](STUDIO_README.md#security-notes) before exposing it.
 
 ## Repo layout
 
 ```
-studio/             the Daily Shorts Studio app (download, transcribe, segment,
-                    caption, metadata, publish, web server)
-adaptive_reframe/   the standalone 9:16 reframing engine  (see its own README)
-STUDIO_README.md    full deploy + publishing guide
-studio.example.yaml all configuration options
+studio/             the app: server, pipeline, segmenter, montage, subscribe
+                    overlay, thumbnails, captions, YouTube publisher, web UI
+adaptive_reframe/   the standalone face-tracking 9:16 reframing engine
+REDESIGN_PLAN.md    the architecture/design document this build followed
+STUDIO_README.md    full deploy + usage guide
+studio.example.yaml every configuration option
 ```
 
 ## Acknowledgements
 
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) · [faster-whisper](https://github.com/SYSTRAN/faster-whisper) · [Ollama](https://ollama.com) · [OpenCV](https://opencv.org) · [ffmpeg](https://ffmpeg.org) · [libass](https://github.com/libass/libass) · [Playwright](https://playwright.dev) · [FastAPI](https://fastapi.tiangolo.com)
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) · [faster-whisper](https://github.com/SYSTRAN/faster-whisper) · [Ollama](https://ollama.com) · [OpenCV](https://opencv.org) · [ffmpeg](https://ffmpeg.org) · [libass](https://github.com/libass/libass) · [rembg](https://github.com/danielgatis/rembg) · [SponsorBlock](https://sponsor.ajay.app) (CC BY-NC-SA 4.0 data) · [FastAPI](https://fastapi.tiangolo.com) · Google Fonts ([Cairo, Tajawal, Lalezar](studio/assets/fonts/README.md), OFL)
 
 ## License
 

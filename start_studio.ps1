@@ -1,4 +1,4 @@
-# Daily Shorts Studio - one-click launcher for Windows.
+# YouTube Shorts Studio - one-click launcher for Windows.
 # Right-click > Run with PowerShell, or:  powershell -ExecutionPolicy Bypass -File start_studio.ps1
 #
 # Starts Ollama (if not already running), then the Studio server + Cloudflare
@@ -24,5 +24,5 @@ if (Test-Path ".\.venv\Scripts\Activate.ps1") {
 }
 
 # 3. Launch the studio (server + Cloudflare tunnel).
-Write-Host "Starting Daily Shorts Studio..." -ForegroundColor Green
+Write-Host "Starting YouTube Shorts Studio..." -ForegroundColor Green
 python -m studio -v

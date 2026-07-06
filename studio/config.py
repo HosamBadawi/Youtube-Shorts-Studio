@@ -31,8 +31,11 @@ class StudioConfig:
     # Set the Secure flag on the auth cookie (recommended when reached only over
     # the HTTPS tunnel). Leave False if you also log in over plain-HTTP LAN.
     cookie_secure: bool = False
-    # Max failed logins per client IP within 5 min before a temporary lockout.
-    login_max_attempts: int = 8
+    # Failed logins within 5 min before a temporary lockout (the tunnel
+    # collapses every client to one IP, so this is a global cap).
+    login_max_attempts: int = 20
+    # Largest video upload accepted (MB). Guards against a disk-fill DoS.
+    max_upload_mb: int = 2048
 
     # --- remote access ------------------------------------------------------
     # "quick"  -> free, ephemeral https URL via `cloudflared tunnel --url` (no

@@ -58,3 +58,4 @@ Thumbs.db
 *.pt
 *.onnx
 .cache/
+.claude/launch.json

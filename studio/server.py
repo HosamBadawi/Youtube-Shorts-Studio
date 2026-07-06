@@ -119,6 +119,19 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     cookie_secure = cfg.cookie_secure or (cfg.cloudflare_mode != "off")
 
     @app.middleware("http")
+    async def _limit_body(request: Request, call_next):
+        # Reject over-large bodies up front so an upload can't fill the disk /
+        # exhaust memory. Uploaded videos can be big; JSON/form control calls
+        # are tiny. uvicorn/Starlette impose no default cap.
+        limit = (cfg.max_upload_mb if request.url.path == "/api/generate"
+                 else 4) * 1024 * 1024
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > limit:
+            return JSONResponse({"detail": "request body too large"},
+                                status_code=413)
+        return await call_next(request)
+
+    @app.middleware("http")
     async def _security_headers(request: Request, call_next):
         resp = await call_next(request)
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -140,22 +153,37 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         if not hmac.compare_digest(request.cookies.get(COOKIE) or "", expected):
             raise HTTPException(status_code=401, detail="not authenticated")
 
-    # Global (not per-IP — the tunnel collapses every client to one IP) backoff:
-    # each recent failure slows the next attempt, capping the brute-force rate
-    # without ever hard-locking out the one legitimate user.
+    # Global (not per-IP — the tunnel collapses every client to one IP) backoff.
+    # A lock SERIALIZES attempts so N concurrent guesses can't run their sleeps
+    # in parallel and outrun the throttle; a hard lockout caps a sustained
+    # flood. The sole legitimate user is only ever briefly delayed.
     auth_fails: list[float] = []
+    auth_lock = asyncio.Lock()
+    _LOCKOUT_S = 60.0
 
     @app.post("/api/login")
     async def login(request: Request, password: str = Form("")):
         import time as _t
-        now = _t.time()
-        auth_fails[:] = [t for t in auth_fails if now - t < 300]
-        if expected and not hmac.compare_digest(_token(gate_key, password),
-                                                expected):
-            auth_fails.append(now)
-            await asyncio.sleep(min(0.5 * (2 ** min(len(auth_fails), 6)), 15.0))
-            raise HTTPException(status_code=401, detail="wrong password")
-        auth_fails.clear()
+        # Serialized: only one login attempt is evaluated at a time, so the
+        # backoff sleep actually paces the guess rate.
+        async with auth_lock:
+            now = _t.time()
+            auth_fails[:] = [t for t in auth_fails if now - t < 300]
+            if len(auth_fails) >= cfg.login_max_attempts:
+                # Too many recent failures — hard-pause new attempts. The
+                # window keeps sliding, so the real user gets back in shortly
+                # after the flood stops.
+                await asyncio.sleep(_LOCKOUT_S)
+                raise HTTPException(status_code=429,
+                                    detail="too many attempts — wait a minute")
+            ok = expected and hmac.compare_digest(
+                _token(gate_key, password), expected)
+            if not ok and expected:
+                auth_fails.append(now)
+                await asyncio.sleep(
+                    min(0.5 * (2 ** min(len(auth_fails), 6)), 15.0))
+                raise HTTPException(status_code=401, detail="wrong password")
+            auth_fails.clear()
         resp = JSONResponse({"ok": True})
         if expected:
             resp.set_cookie(COOKIE, expected, httponly=True, samesite="lax",
@@ -181,6 +209,10 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
     async def status(request: Request):
         authed = (not expected) or hmac.compare_digest(
             request.cookies.get(COOKIE) or "", expected)
+        # Pre-auth callers get ONLY what the login screen needs — no config
+        # recon (model, provider, defaults) leaked to the open internet.
+        if not authed:
+            return {"authed": False, "needs_password": bool(expected)}
         # available()/resolve_model() do blocking Ollama HTTP — probe once, off the
         # event loop, so a slow/down Ollama can't stall unrelated requests.
         ollama_up = False
@@ -296,13 +328,24 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
                 raise HTTPException(400, "no file uploaded")
             from .downloader import claim_index
             suffix = Path(file.filename or "src.mp4").suffix or ".mp4"
+            if suffix.lower() not in VIDEO_EXTS:
+                raise HTTPException(400, "unsupported video type")
             # Save uploaded long videos into the library as 1.mp4, 2.mp4, … so
             # their shorts follow the same naming (1_1.mp4, …).
+            cap = cfg.max_upload_mb * 1024 * 1024
             with claim_index(cfg.library_path) as idx:
                 dest = cfg.library_path / f"{idx}{suffix}"
-                with dest.open("wb") as fh:
-                    while chunk := await file.read(1024 * 1024):
-                        fh.write(chunk)
+                written = 0
+                try:
+                    with dest.open("wb") as fh:
+                        while chunk := await file.read(1024 * 1024):
+                            written += len(chunk)
+                            if written > cap:  # defense beyond the CL check
+                                raise HTTPException(413, "upload too large")
+                            fh.write(chunk)
+                except BaseException:
+                    dest.unlink(missing_ok=True)  # no partial file left behind
+                    raise
             source = str(dest)
         elif source_type == "url":
             from .downloader import is_url

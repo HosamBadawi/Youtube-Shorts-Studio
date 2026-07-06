@@ -10,6 +10,8 @@ port: 8765
 # this password is the gate.
 app_password: "change-me"
 cookie_secure: false
+login_max_attempts: 20         # failed logins in 5 min before a 1-min lockout
+max_upload_mb: 2048            # reject video uploads larger than this
 
 # --- remote access (open the app on your phone) -------------------------------
 # quick = free ephemeral trycloudflare.com URL (changes each run)
