@@ -57,7 +57,7 @@ async function boot() {
   $("#gen-count").value = s.default_count || 3;
   if (s.length_min) $("#gen-min").value = Math.round(s.length_min);
   if (s.length_max) $("#gen-max").value = Math.round(s.length_max);
-  const cap = Math.min(95, Math.max(25, Math.round(s.caption_pos || 84)));
+  const cap = Math.min(75, Math.max(5, Math.round(s.caption_pos || 16)));
   $("#gen-cappos").value = cap;
   $("#gen-cappos-val").textContent = cap + "%";
   $("#pass-banner").classList.toggle("hidden", !s.needs_password_change);

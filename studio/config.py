@@ -155,9 +155,10 @@ class StudioConfig:
     caption_highlight: str = "#FFE000"   # color of the word being spoken
     caption_base_color: str = "#FFFFFF"
     caption_position: str = "lower"      # lower | center | bottom
-    # Numeric override for the caption height: percent from the TOP of the
-    # frame (e.g. 84 ≈ lower, 52 ≈ center, 94 ≈ bottom). 0 = use the preset
-    # above. The web UI's slider sends a per-batch value that wins over both.
+    # Numeric override for the caption height: percent UP FROM THE BOTTOM —
+    # bigger = higher (16 ≈ lower, 48 ≈ center, 6 ≈ bottom). 0 = use the
+    # preset above. The web UI's slider sends a per-batch value that wins
+    # over both.
     caption_pos_pct: float = 0.0
     caption_max_words: int = 4           # words on screen at once
 

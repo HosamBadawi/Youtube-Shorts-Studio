@@ -31,9 +31,10 @@ class CaptionStyle:
     outline: int = 6                # black border thickness
     shadow: int = 2
     position: str = "lower"         # "lower" | "center" | "bottom"
-    # Numeric override for the vertical position: percent from the TOP of the
-    # frame where the text's bottom edge sits (e.g. 84 ≈ "lower"). None keeps
-    # the preset behaviour above, byte-for-byte.
+    # Numeric override for the vertical position: percent UP FROM THE BOTTOM
+    # of the frame where the text's bottom edge sits — bigger = higher, like
+    # CSS `bottom` (16 ≈ "lower", 48 ≈ center, 6 ≈ "bottom"). None keeps the
+    # preset behaviour above, byte-for-byte.
     pos_pct: float | None = None
     max_words: int = 4              # words shown on screen at once
     max_line_seconds: float = 2.5   # force a new line after this long
@@ -227,16 +228,19 @@ def _resolve_font_file(name: str) -> str | None:
 
 
 def _clamped_pct(style: CaptionStyle) -> float | None:
-    """The numeric position override, kept safely on screen (15%..98%)."""
+    """The numeric position override (percent up from the bottom), kept
+    safely on screen (2%..85%)."""
     if style.pos_pct is None or style.pos_pct <= 0:
         return None
-    return min(98.0, max(15.0, float(style.pos_pct)))
+    return min(85.0, max(2.0, float(style.pos_pct)))
 
 
 def _baseline_y(style: CaptionStyle, play_h: int) -> int:
     pct = _clamped_pct(style)
     if pct is not None:
-        return int(play_h * pct / 100.0)
+        # same integer lift as _placement's MarginV, so the RTL absolute
+        # path and the LTR margin path land on the identical pixel row
+        return play_h - int(play_h * pct / 100.0)
     if style.position == "center":
         return int(play_h * 0.52)
     if style.position == "bottom":
@@ -306,9 +310,9 @@ def _placement(style: CaptionStyle, play_h: int) -> tuple[int, int]:
     MarginV lifts the text further UP from the bottom edge."""
     pct = _clamped_pct(style)
     if pct is not None:
-        # bottom-anchored at pct% from the top — mirrors _baseline_y so the
-        # LTR and RTL paths land at the same height
-        return 2, int(play_h * (100.0 - pct) / 100.0)
+        # bottom-anchored, lifted pct% up from the bottom — mirrors
+        # _baseline_y so the LTR and RTL paths land at the same height
+        return 2, int(play_h * pct / 100.0)
     if style.position == "center":
         return 5, 0                      # true middle
     if style.position == "bottom":

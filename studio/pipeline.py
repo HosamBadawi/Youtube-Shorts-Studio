@@ -569,8 +569,9 @@ class StudioPipeline:
                         caption_pos: float | None = None) -> None:
         """Burn captions onto the reframed clip; fall back to raw on a miss.
         ``local_words`` are already clip-local (offset + silence-remapped).
-        ``caption_pos`` (percent from top) wins over the config; 0/None falls
-        back to ``caption_pos_pct`` and then the position preset."""
+        ``caption_pos`` (percent up from the bottom — bigger = higher) wins
+        over the config; 0/None falls back to ``caption_pos_pct`` and then
+        the position preset."""
         burned = False
         if self.cfg.captions_enabled and local_words:
             job.stage = "burning captions"

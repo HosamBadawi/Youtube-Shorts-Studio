@@ -1,5 +1,6 @@
-"""The numeric caption-position override — and proof the presets are
-byte-for-byte untouched when it is not set."""
+"""The numeric caption-position override (percent UP from the bottom —
+bigger = higher) — and proof the presets are byte-for-byte untouched when it
+is not set."""
 
 from __future__ import annotations
 
@@ -28,24 +29,38 @@ def test_presets_unchanged_without_override():
                               1080, H)) == int(H * 0.06)
 
 
-@pytest.mark.parametrize("pct,expected", [(60, int(H * 0.40)),
-                                          (84, int(H * 0.16)),
-                                          (30, int(H * 0.70))])
-def test_numeric_override_sets_margin(pct, expected):
+@pytest.mark.parametrize("pct,expected", [(60, int(H * 0.60)),
+                                          (16, int(H * 0.16)),
+                                          (30, int(H * 0.30))])
+def test_numeric_override_lifts_from_bottom(pct, expected):
+    # MarginV IS the lift from the bottom edge: bigger slider = higher text
     ass = build_ass(EN, CaptionStyle(pos_pct=pct), 1080, H)
     assert margin_v(ass) == expected
 
 
 def test_numeric_override_clamped_on_screen():
-    assert margin_v(build_ass(EN, CaptionStyle(pos_pct=5), 1080, H)) \
-        == int(H * (100 - 15) / 100)             # floor: 15% from top
+    assert margin_v(build_ass(EN, CaptionStyle(pos_pct=1), 1080, H)) \
+        == int(H * 0.02)                         # floor: 2% up
     assert margin_v(build_ass(EN, CaptionStyle(pos_pct=100), 1080, H)) \
-        == int(H * (100 - 98) / 100)             # ceiling: 98%
+        == int(H * 0.85)                         # ceiling: 85% up
 
 
 def test_rtl_absolute_path_honours_override():
     ass = build_ass(AR, CaptionStyle(pos_pct=60), 1080, H)
     if "\\pos(" not in ass:      # Pillow/font unavailable -> karaoke fallback
         pytest.skip("absolute RTL layout unavailable on this host")
-    y = int(H * 60 / 100)
-    assert f",{y})" in ass       # every \pos(x, y) lands at 60% from the top
+    y = H - int(H * 60 / 100)
+    assert f",{y})" in ass       # lifted 60% up from the bottom
+
+
+def test_both_paths_land_at_the_same_height():
+    """The LTR MarginV lift and the RTL absolute y must be two views of the
+    same position: MarginV == H - y."""
+    pct = 42
+    en = build_ass(EN, CaptionStyle(pos_pct=pct), 1080, H)
+    ar = build_ass(AR, CaptionStyle(pos_pct=pct), 1080, H)
+    if "\\pos(" not in ar:
+        pytest.skip("absolute RTL layout unavailable on this host")
+    lift = margin_v(en)
+    assert lift == int(H * pct / 100)
+    assert f",{H - lift})" in ar

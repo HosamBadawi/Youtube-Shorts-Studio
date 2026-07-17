@@ -237,9 +237,9 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             "default_privacy": cfg.youtube_privacy,
             "embed_thumb": cfg.embed_thumb_first_frame,
             # slider default: numeric config override, else the preset mapped
-            # to its %-from-top equivalent
+            # to its %-up-from-bottom equivalent
             "caption_pos": cfg.caption_pos_pct or
-                {"center": 52, "bottom": 94}.get(cfg.caption_position, 84),
+                {"center": 48, "bottom": 6}.get(cfg.caption_position, 16),
             "needs_password_change": cfg.app_password == DEFAULT_PASSWORD,
             "vault_enabled": bool(vault and vault.enabled),
         }
@@ -331,8 +331,9 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         file: UploadFile = File(None),
         _: None = Depends(require_auth),
     ):
-        if caption_pos and not (15 <= caption_pos <= 98):
-            raise HTTPException(400, "caption position must be 15-98 (% from top)")
+        if caption_pos and not (2 <= caption_pos <= 85):
+            raise HTTPException(400,
+                                "caption height must be 2-85 (% from bottom)")
         if source_type == "upload":
             if not file:
                 raise HTTPException(400, "no file uploaded")
