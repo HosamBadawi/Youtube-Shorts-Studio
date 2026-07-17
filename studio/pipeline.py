@@ -64,7 +64,8 @@ class StudioPipeline:
     def generate_shorts(self, source: str, count: int, niche: str = "",
                         batch_id: str = "", on_stage=None,
                         min_s: float | None = None,
-                        max_s: float | None = None) -> list[str]:
+                        max_s: float | None = None,
+                        face_tracking: bool = True) -> list[str]:
         """Returns the created job ids. Progress goes to the batches table
         (when ``batch_id`` is set) and to ``on_stage(str)`` (CLI use)."""
         min_len = min_s if min_s else self.cfg.min_short_seconds
@@ -116,27 +117,43 @@ class StudioPipeline:
             from .sponsorblock import fetch_junk_segments
             junk = fetch_junk_segments(video_id)
 
+        # NEVER overlap a short that was already generated from this same
+        # source video (any batch, any day): its spans are masked exactly
+        # like sponsor segments, plus a hard filter below as a second gate.
+        used = self.store.used_segments_for_source(source)
+        if used:
+            logger.info("excluding %d span(s) already used by earlier shorts",
+                        len(used))
+
         picks = []
         note = ""
         if tr.available:
             from .segmenter import select_segments
             picks = select_segments(
                 self.llm, tr, duration, count, min_len, max_len,
-                min_start=floor, junk=junk,
+                min_start=floor, junk=junk + used,
                 window=self.cfg.segment_window_sentences,
                 overlap=self.cfg.segment_overlap_sentences,
                 on_stage=lambda s: stage(s, 36))
+            picks = [p for p in picks if not _overlaps(p.start, p.end, used)]
         if not picks:
             if tr.available and self.llm.available():
                 note = ("no strong self-contained segments found — try wider "
                         "duration bounds or a different video")
+                if used:
+                    note = ("no strong segments left that don't overlap the "
+                            "shorts already made from this video")
                 stage("done", 100, note=note)
                 return []
             # No transcript / no LLM: one honest default clip after the intro
             # floor beats producing nothing at all.
             from .segmenter import SegmentPick
-            end = min(floor + target_len, duration)
-            picks = [SegmentPick(floor, end, topic="",
+            window = _first_free_window(duration, floor, target_len, used)
+            if window is None:
+                stage("done", 100, note="this video is already fully covered "
+                                        "by earlier shorts")
+                return []
+            picks = [SegmentPick(window[0], window[1], topic="",
                                  reason="AI selection unavailable — default "
                                         "window after the intro")]
             note = "AI selection unavailable — one default clip was cut"
@@ -173,7 +190,8 @@ class StudioPipeline:
                     # source — don't silently overwrite; uniquify with job id
                     out = str(self.cfg.shorts_dir
                               / f"{longstem}_{idx}_{job.id[:6]}.mp4")
-                self._render_short(job, source, tr.words, out)
+                self._render_short(job, source, tr.words, out,
+                                   face_tracking=face_tracking)
 
                 if self.llm.available():
                     job.stage = f"short {idx}: writing the copy"
@@ -280,8 +298,8 @@ class StudioPipeline:
     # ======================================================================
     # PER-SHORT RENDER CHAIN (trim -> montage -> reframe -> captions -> overlay)
     # ======================================================================
-    def _render_short(self, job: Job, source: str, words, out_path: str
-                      ) -> None:
+    def _render_short(self, job: Job, source: str, words, out_path: str,
+                      face_tracking: bool = True) -> None:
         span = job.segment or (0.0, job.duration or _probe_duration(source))
         start, end = span
         # All intermediates are declared up front so the finally can sweep
@@ -319,10 +337,10 @@ class StudioPipeline:
                                        "uncut clip", exc_info=True)
                         Path(cut_path).unlink(missing_ok=True)
 
-            # 2. face-tracked 9:16 reframe ------------------------------------
+            # 2. 9:16 reframe (face-tracked, or static when disabled) ---------
             job.stage = "reframing to 9:16"
             self.store.update(job)
-            self._reframe(seg_path, raw_path)
+            self._reframe(seg_path, raw_path, face_tracking)
 
             # 3. karaoke captions ---------------------------------------------
             self._apply_captions(job, local_words, raw_path, captioned)
@@ -528,12 +546,18 @@ class StudioPipeline:
             raise
         return out
 
-    def _reframe(self, src: str, out: str) -> None:
+    def _reframe(self, src: str, out: str, face_tracking: bool = True) -> None:
         # Imported lazily: pulls in OpenCV, only needed on the rendering host.
         from adaptive_reframe import AdaptiveReframePipeline
 
-        mode = (self.cfg.reframe_mode or "auto").strip().lower()
-        force = None if mode in {"auto", ""} else mode
+        if face_tracking:
+            mode = (self.cfg.reframe_mode or "auto").strip().lower()
+            force = None if mode in {"auto", ""} else mode
+        else:
+            # Face tracking off (e.g. a 2-person podcast where the tracked
+            # crop jumps between speakers): blur_background shows the FULL
+            # scene, statically, with blurred margins — nothing ever moves.
+            force = "blur_background"
         AdaptiveReframePipeline().reframe(src, out, force_mode=force)
 
     def _apply_captions(self, job: Job, local_words, raw_path: str,
@@ -570,6 +594,27 @@ class StudioPipeline:
 # ---------------------------------------------------------------------------
 # module-level helpers (also imported by the CLI tools)
 # ---------------------------------------------------------------------------
+def _overlaps(start: float, end: float,
+              spans: list[tuple[float, float]], tol: float = 0.5) -> bool:
+    """True when [start, end] overlaps any span by more than ``tol`` seconds."""
+    return any(min(end, b) - max(start, a) > tol for a, b in spans)
+
+
+def _first_free_window(duration: float, floor: float, target_len: float,
+                       used: list[tuple[float, float]]
+                       ) -> tuple[float, float] | None:
+    """First [start, start+target_len] window after ``floor`` that does not
+    overlap any previously-used span (fallback path when the AI selector is
+    unavailable). None when the video has no room left."""
+    start = floor
+    while start + 5.0 <= duration:
+        end = min(start + target_len, duration)
+        if end - start >= 5.0 and not _overlaps(start, end, used):
+            return (start, end)
+        start += 5.0
+    return None
+
+
 def _offset_words(words, seg_start: float, seg_end: float):
     """Keep words inside [seg_start, seg_end) and rebase them to a 0-based
     timeline so they line up with the trimmed clip."""

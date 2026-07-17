@@ -123,7 +123,9 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         # Reject over-large bodies up front so an upload can't fill the disk /
         # exhaust memory. Uploaded videos can be big; JSON/form control calls
         # are tiny. uvicorn/Starlette impose no default cap.
-        limit = (cfg.max_upload_mb if request.url.path == "/api/generate"
+        path = request.url.path
+        limit = (cfg.max_upload_mb if path == "/api/generate"
+                 else 20 if path.endswith("/thumbnail/upload")  # phone photos
                  else 4) * 1024 * 1024
         cl = request.headers.get("content-length")
         if cl and cl.isdigit() and int(cl) > limit:
@@ -320,6 +322,7 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         niche: str = Form(""),
         min_seconds: float = Form(0),
         max_seconds: float = Form(0),
+        face_tracking: int = Form(1),
         file: UploadFile = File(None),
         _: None = Depends(require_auth),
     ):
@@ -373,7 +376,8 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             try:
                 pipeline.generate_shorts(source, n, niche=niche,
                                          batch_id=batch_id,
-                                         min_s=mn, max_s=mx)
+                                         min_s=mn, max_s=mx,
+                                         face_tracking=bool(face_tracking))
             except Exception:  # pragma: no cover
                 logger.exception("batch failed")
                 store.batch_update(batch_id, error="generation failed "
@@ -523,6 +527,25 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         # minutes, and the UI must see "queued" (non-terminal) right away.
         store.patch(job.id, stage="queued: thumbnail rebuild")
         worker.submit(run)
+        return {"ok": True}
+
+    @app.post("/api/job/{job_id}/thumbnail/upload")
+    async def upload_thumbnail(job_id: str, file: UploadFile = File(...),
+                               _: None = Depends(require_auth)):
+        """Use your own image as this short's thumbnail — it replaces the
+        composed one everywhere (Save button, first-frame embed on upload)."""
+        job = store.get(job_id)
+        if not job:
+            raise HTTPException(404, "job not found")
+        data = await file.read()
+        if len(data) > 20 * 1024 * 1024:  # defense beyond the CL check
+            raise HTTPException(413, "image too large (max 20 MB)")
+        from .thumbnails import set_custom_thumbnail
+        path = await run_in_threadpool(set_custom_thumbnail, cfg, job.id, data)
+        if not path:
+            raise HTTPException(400, "could not read that image "
+                                     "(use a jpg/png/webp photo)")
+        store.patch(job.id, thumb_path=path)
         return {"ok": True}
 
     @app.get("/api/preview/{job_id}")

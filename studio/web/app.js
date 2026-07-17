@@ -121,6 +121,7 @@ $("#gen-btn").onclick = async () => {
   fd.append("niche", $("#gen-niche").value.trim());
   fd.append("min_seconds", $("#gen-min").value || "0");
   fd.append("max_seconds", $("#gen-max").value || "0");
+  fd.append("face_tracking", $("#gen-face").checked ? "1" : "0");
 
   const btn = $("#gen-btn");
   btn.disabled = true;
@@ -311,8 +312,10 @@ function cardHtml(j) {
         <button class="btn small" data-act="regen">↻ Regenerate</button>
         <button class="btn small" data-act="frames">🖼 Frame</button>
         <button class="btn small" data-act="headline">✎ Headline</button>
+        <button class="btn small" data-act="upthumb">⬆ Upload</button>
         <a class="btn small disabled" data-act="dl"
            href="/api/job/${j.id}/thumbnail?download=1">⬇ Save</a>
+        <input type="file" accept="image/*" data-role="thumbfile" hidden>
       </div>
       <div data-role="framestrip"></div>
     </div>
@@ -405,6 +408,28 @@ function wireCard(card, j0) {
         regenThumb(card, id, { frame_t: +im.dataset.t });
       }));
     } catch (e) { toast(e.message); }
+  };
+
+  // custom thumbnail: pick a photo from the phone, it replaces the composed
+  // one everywhere (Save button + first-frame embed on upload)
+  const tfile = card.querySelector("[data-role=thumbfile]");
+  card.querySelector("[data-act=upthumb]").onclick = () => tfile.click();
+  tfile.onchange = async () => {
+    const f = tfile.files[0];
+    if (!f) return;
+    const fd = new FormData();
+    fd.append("file", f);
+    const b = card.querySelector("[data-act=upthumb]");
+    b.disabled = true;
+    try {
+      await api(`/api/job/${id}/thumbnail/upload`, { method: "POST", body: fd });
+      card.querySelector("[data-role=thumb]").innerHTML =
+        `<img src="/api/job/${id}/thumbnail?t=${Date.now()}">`;
+      card.querySelector("[data-act=dl]").classList.remove("disabled");
+      toast("Custom thumbnail set");
+    } catch (e) { toast(e.message); }
+    b.disabled = false;
+    tfile.value = "";
   };
 
   card.querySelector("[data-act=upload]").onclick = () => uploadJob(card, id);

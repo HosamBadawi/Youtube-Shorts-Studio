@@ -118,6 +118,10 @@ a.btn { text-decoration: none; }
 .options summary { color: var(--muted); font-size: 13.5px; cursor: pointer; user-select: none; }
 .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .opt-grid label:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.opt-grid label.check { flex-direction: row; align-items: center; gap: 10px;
+  grid-column: 1 / -1; }
+.opt-grid label.check input { width: 20px; height: 20px; flex: none;
+  accent-color: var(--accent); }
 
 .stepper { display: flex; align-items: center; gap: 6px; }
 .stepper input { text-align: center; padding: 9px 4px; }

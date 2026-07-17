@@ -16,7 +16,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["generate_thumbnail", "rebuild_thumbnail", "list_candidates"]
+__all__ = ["generate_thumbnail", "rebuild_thumbnail", "list_candidates",
+           "set_custom_thumbnail"]
 
 
 def _job_dir(cfg, job_id: str) -> Path:
@@ -101,6 +102,40 @@ def rebuild_thumbnail(cfg, job_id: str, headline: str | None = None,
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def set_custom_thumbnail(cfg, job_id: str, image_bytes: bytes) -> str | None:
+    """A user-supplied photo becomes this short's thumb.jpg: EXIF-rotated,
+    cover-cropped to 1080x1920, kept under YouTube's 2 MB limit. Returns the
+    saved path, or None when the bytes aren't a readable image."""
+    import io
+    import os
+
+    try:
+        from PIL import Image, ImageOps
+        from .compose import CANVAS
+        img = Image.open(io.BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+    except Exception:
+        logger.warning("custom thumbnail rejected (unreadable image)")
+        return None
+
+    ratio = max(CANVAS[0] / img.width, CANVAS[1] / img.height)
+    img = img.resize((max(1, round(img.width * ratio)),
+                      max(1, round(img.height * ratio))), Image.LANCZOS)
+    x = (img.width - CANVAS[0]) // 2
+    y = (img.height - CANVAS[1]) // 2
+    img = img.crop((x, y, x + CANVAS[0], y + CANVAS[1]))
+
+    out_dir = _job_dir(cfg, job_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / "thumb.jpg"
+    for quality in (92, 85, 78, 70):
+        img.save(out, "JPEG", quality=quality, optimize=True)
+        if os.path.getsize(out) < 1_900_000:
+            break
+    logger.info("custom thumbnail set for %s", job_id)
+    return str(out)
 
 
 def list_candidates(cfg, job_id: str) -> list[dict]:

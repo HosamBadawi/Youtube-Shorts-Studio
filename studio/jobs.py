@@ -182,6 +182,37 @@ class JobStore:
                 (batch_id,)).fetchall()
         return [_row_to_job(r) for r in rows]
 
+    def used_segments_for_source(self, source_path: str
+                                 ) -> list[tuple[float, float]]:
+        """Time spans already turned into shorts from this source video — any
+        batch, any day. New generations exclude these so two shorts can NEVER
+        overlap. Paths are compared resolved (absolute vs relative forms of
+        the same file still match); only successfully rendered shorts count
+        (an errored job never produced a short, so its span stays available).
+        """
+        try:
+            want = Path(source_path).resolve()
+        except OSError:
+            want = Path(source_path)
+        with self._lock, self._conn() as c:
+            rows = c.execute(
+                "SELECT source_path, segment_json FROM jobs"
+                " WHERE segment_json IS NOT NULL AND segment_json != 'null'"
+                "   AND status IN (?, ?, ?)",
+                (STATUS_READY, STATUS_PUBLISHING, STATUS_DONE)).fetchall()
+        spans: list[tuple[float, float]] = []
+        for r in rows:
+            try:
+                if Path(r["source_path"] or "").resolve() != want:
+                    continue
+            except OSError:
+                continue
+            seg = json.loads(r["segment_json"] or "null")
+            if seg and len(seg) == 2:
+                spans.append((float(seg[0]), float(seg[1])))
+        spans.sort()
+        return spans
+
     def published_today(self) -> bool:
         with self._lock, self._conn() as c:
             row = c.execute(
