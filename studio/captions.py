@@ -31,6 +31,10 @@ class CaptionStyle:
     outline: int = 6                # black border thickness
     shadow: int = 2
     position: str = "lower"         # "lower" | "center" | "bottom"
+    # Numeric override for the vertical position: percent from the TOP of the
+    # frame where the text's bottom edge sits (e.g. 84 ≈ "lower"). None keeps
+    # the preset behaviour above, byte-for-byte.
+    pos_pct: float | None = None
     max_words: int = 4              # words shown on screen at once
     max_line_seconds: float = 2.5   # force a new line after this long
     highlight_scale: float = 1.18   # how much the active word grows
@@ -89,7 +93,7 @@ def burn_captions(video_in: str, words: list[Word], out_path: str,
 def build_ass(words: list[Word], style: CaptionStyle,
               play_w: int, play_h: int) -> str:
     """Assemble a full ASS document with one karaoke event per spoken word."""
-    align, margin_v = _placement(style.position, play_h)
+    align, margin_v = _placement(style, play_h)
     base = _ass_color(style.base_color)
     big = int(round(style.fontsize * style.highlight_scale))
 
@@ -150,7 +154,7 @@ def _rtl_pos_events(chunk: list[Word], style: CaptionStyle, accent: str,
     space = _space_width(style.font, style.fontsize)
     total = sum(widths) + space * (len(chunk) - 1)
     right = (play_w + total) / 2.0          # right edge of the centred line
-    y = _baseline_y(style.position, play_h)
+    y = _baseline_y(style, play_h)
     centers = []
     cursor = right
     for wdt in widths:                      # word 0 (spoken first) = rightmost
@@ -222,10 +226,20 @@ def _resolve_font_file(name: str) -> str | None:
     return None
 
 
-def _baseline_y(position: str, play_h: int) -> int:
-    if position == "center":
+def _clamped_pct(style: CaptionStyle) -> float | None:
+    """The numeric position override, kept safely on screen (15%..98%)."""
+    if style.pos_pct is None or style.pos_pct <= 0:
+        return None
+    return min(98.0, max(15.0, float(style.pos_pct)))
+
+
+def _baseline_y(style: CaptionStyle, play_h: int) -> int:
+    pct = _clamped_pct(style)
+    if pct is not None:
+        return int(play_h * pct / 100.0)
+    if style.position == "center":
         return int(play_h * 0.52)
-    if position == "bottom":
+    if style.position == "bottom":
         return play_h - int(play_h * 0.06)
     return play_h - int(play_h * 0.16)      # "lower"
 
@@ -287,12 +301,17 @@ def _chunk_words(words: list[Word], max_words: int,
     return chunks
 
 
-def _placement(position: str, play_h: int) -> tuple[int, int]:
+def _placement(style: CaptionStyle, play_h: int) -> tuple[int, int]:
     """Return (ASS alignment, MarginV). Alignment 2 = bottom-center; a bigger
     MarginV lifts the text further UP from the bottom edge."""
-    if position == "center":
+    pct = _clamped_pct(style)
+    if pct is not None:
+        # bottom-anchored at pct% from the top — mirrors _baseline_y so the
+        # LTR and RTL paths land at the same height
+        return 2, int(play_h * (100.0 - pct) / 100.0)
+    if style.position == "center":
         return 5, 0                      # true middle
-    if position == "bottom":
+    if style.position == "bottom":
         return 2, int(play_h * 0.06)     # ~115px: very bottom edge
     return 2, int(play_h * 0.16)         # "lower": low, but clear of the edge
 

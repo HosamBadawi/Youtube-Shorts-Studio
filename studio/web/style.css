@@ -122,6 +122,10 @@ a.btn { text-decoration: none; }
   grid-column: 1 / -1; }
 .opt-grid label.check input { width: 20px; height: 20px; flex: none;
   accent-color: var(--accent); }
+.opt-grid label.slider-row { grid-column: 1 / -1; }
+.opt-grid label.slider-row input[type="range"] { width: 100%; padding: 0;
+  height: 28px; background: none; border: none; accent-color: var(--accent); }
+.slider-val { color: var(--text); font-weight: 700; margin-left: 6px; }
 
 .stepper { display: flex; align-items: center; gap: 6px; }
 .stepper input { text-align: center; padding: 9px 4px; }

@@ -65,7 +65,8 @@ class StudioPipeline:
                         batch_id: str = "", on_stage=None,
                         min_s: float | None = None,
                         max_s: float | None = None,
-                        face_tracking: bool = True) -> list[str]:
+                        face_tracking: bool = True,
+                        caption_pos: float | None = None) -> list[str]:
         """Returns the created job ids. Progress goes to the batches table
         (when ``batch_id`` is set) and to ``on_stage(str)`` (CLI use)."""
         min_len = min_s if min_s else self.cfg.min_short_seconds
@@ -191,7 +192,8 @@ class StudioPipeline:
                     out = str(self.cfg.shorts_dir
                               / f"{longstem}_{idx}_{job.id[:6]}.mp4")
                 self._render_short(job, source, tr.words, out,
-                                   face_tracking=face_tracking)
+                                   face_tracking=face_tracking,
+                                   caption_pos=caption_pos)
 
                 if self.llm.available():
                     job.stage = f"short {idx}: writing the copy"
@@ -299,7 +301,8 @@ class StudioPipeline:
     # PER-SHORT RENDER CHAIN (trim -> montage -> reframe -> captions -> overlay)
     # ======================================================================
     def _render_short(self, job: Job, source: str, words, out_path: str,
-                      face_tracking: bool = True) -> None:
+                      face_tracking: bool = True,
+                      caption_pos: float | None = None) -> None:
         span = job.segment or (0.0, job.duration or _probe_duration(source))
         start, end = span
         # All intermediates are declared up front so the finally can sweep
@@ -343,7 +346,8 @@ class StudioPipeline:
             self._reframe(seg_path, raw_path, face_tracking)
 
             # 3. karaoke captions ---------------------------------------------
-            self._apply_captions(job, local_words, raw_path, captioned)
+            self._apply_captions(job, local_words, raw_path, captioned,
+                                 caption_pos)
 
             # 4. subscribe-reminder overlay ------------------------------------
             final = captioned
@@ -561,19 +565,24 @@ class StudioPipeline:
         AdaptiveReframePipeline().reframe(src, out, force_mode=force)
 
     def _apply_captions(self, job: Job, local_words, raw_path: str,
-                        out_path: str) -> None:
+                        out_path: str,
+                        caption_pos: float | None = None) -> None:
         """Burn captions onto the reframed clip; fall back to raw on a miss.
-        ``local_words`` are already clip-local (offset + silence-remapped)."""
+        ``local_words`` are already clip-local (offset + silence-remapped).
+        ``caption_pos`` (percent from top) wins over the config; 0/None falls
+        back to ``caption_pos_pct`` and then the position preset."""
         burned = False
         if self.cfg.captions_enabled and local_words:
             job.stage = "burning captions"
             self.store.update(job)
+            pos_pct = caption_pos or self.cfg.caption_pos_pct or None
             style = CaptionStyle(
                 font=self.cfg.caption_font,
                 fontsize=self.cfg.caption_fontsize,
                 base_color=self.cfg.caption_base_color,
                 highlight=self.cfg.caption_highlight,
                 position=self.cfg.caption_position,
+                pos_pct=pos_pct,
                 max_words=self.cfg.caption_max_words,
             )
             burned = burn_captions(raw_path, local_words, out_path, style,

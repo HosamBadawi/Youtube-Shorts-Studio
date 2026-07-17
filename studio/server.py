@@ -236,6 +236,10 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
             "length_max": cfg.max_short_seconds,
             "default_privacy": cfg.youtube_privacy,
             "embed_thumb": cfg.embed_thumb_first_frame,
+            # slider default: numeric config override, else the preset mapped
+            # to its %-from-top equivalent
+            "caption_pos": cfg.caption_pos_pct or
+                {"center": 52, "bottom": 94}.get(cfg.caption_position, 84),
             "needs_password_change": cfg.app_password == DEFAULT_PASSWORD,
             "vault_enabled": bool(vault and vault.enabled),
         }
@@ -323,9 +327,12 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
         min_seconds: float = Form(0),
         max_seconds: float = Form(0),
         face_tracking: int = Form(1),
+        caption_pos: float = Form(0),
         file: UploadFile = File(None),
         _: None = Depends(require_auth),
     ):
+        if caption_pos and not (15 <= caption_pos <= 98):
+            raise HTTPException(400, "caption position must be 15-98 (% from top)")
         if source_type == "upload":
             if not file:
                 raise HTTPException(400, "no file uploaded")
@@ -377,7 +384,8 @@ def create_app(cfg: StudioConfig | None = None) -> FastAPI:
                 pipeline.generate_shorts(source, n, niche=niche,
                                          batch_id=batch_id,
                                          min_s=mn, max_s=mx,
-                                         face_tracking=bool(face_tracking))
+                                         face_tracking=bool(face_tracking),
+                                         caption_pos=caption_pos or None)
             except Exception:  # pragma: no cover
                 logger.exception("batch failed")
                 store.batch_update(batch_id, error="generation failed "

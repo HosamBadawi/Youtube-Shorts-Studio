@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
                          base_color=cfg.caption_base_color,
                          highlight=cfg.caption_highlight,
                          position=cfg.caption_position,
+                         pos_pct=cfg.caption_pos_pct or None,
                          max_words=cfg.caption_max_words)
     from adaptive_reframe import AdaptiveReframePipeline
     reframer = AdaptiveReframePipeline()

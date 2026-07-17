@@ -57,6 +57,9 @@ async function boot() {
   $("#gen-count").value = s.default_count || 3;
   if (s.length_min) $("#gen-min").value = Math.round(s.length_min);
   if (s.length_max) $("#gen-max").value = Math.round(s.length_max);
+  const cap = Math.min(95, Math.max(25, Math.round(s.caption_pos || 84)));
+  $("#gen-cappos").value = cap;
+  $("#gen-cappos-val").textContent = cap + "%";
   $("#pass-banner").classList.toggle("hidden", !s.needs_password_change);
   // deep link: /#shorts or /#settings opens that tab directly
   const tab = location.hash.slice(1);
@@ -99,6 +102,9 @@ $("#gen-file").onchange = () => {
   const f = $("#gen-file").files[0];
   $("#gen-file-label").textContent = f ? f.name : "Choose a video…";
 };
+$("#gen-cappos").oninput = () => {
+  $("#gen-cappos-val").textContent = $("#gen-cappos").value + "%";
+};
 
 $("#gen-btn").onclick = async () => {
   $("#gen-err").textContent = "";
@@ -122,6 +128,7 @@ $("#gen-btn").onclick = async () => {
   fd.append("min_seconds", $("#gen-min").value || "0");
   fd.append("max_seconds", $("#gen-max").value || "0");
   fd.append("face_tracking", $("#gen-face").checked ? "1" : "0");
+  fd.append("caption_pos", $("#gen-cappos").value || "0");
 
   const btn = $("#gen-btn");
   btn.disabled = true;
