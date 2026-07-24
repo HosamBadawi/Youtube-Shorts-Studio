@@ -5,8 +5,8 @@
 <h1 align="center">YouTube Shorts Studio</h1>
 
 <p align="center">
-  <b>One long YouTube video in — several ready-to-upload Arabic Shorts out.</b><br>
-  Semantically cut, montage-paced, captioned, thumbnailed, and uploaded —<br>
+  <b>One long YouTube video in several ready-to-upload Arabic Shorts out.</b><br>
+  Semantically cut, montage-paced, captioned, thumbnailed, and uploaded <br>
   all self-hosted on your own PC, all free, all driven from your phone.
 </p>
 
@@ -24,18 +24,18 @@
 ## What it does
 
 Paste a YouTube link into a phone-friendly web page and the pipeline turns a long
-video into a batch of polished Shorts — each one a *complete idea* that opens on a
+video into a batch of polished Shorts each one a *complete idea* that opens on a
 hook and ends on its payoff, never a random mid-sentence cut.
 
 | | |
 |---|---|
-| 🎯 **Semantic segment selection** | A local LLM reads a sentence-numbered transcript and returns *indices* (never timestamps) — every cut lands on a sentence boundary. Intros, sponsor reads and outros are masked out. |
-| ✂️ **Silence-cut montage** | Dead air between words is removed with clean jump cuts and a subtle alternating punch-in zoom — that fast, addictive rhythm. Captions stay perfectly in sync. |
-| 🗣️ **Egyptian-Arabic karaoke captions** | Word-by-word highlight with correct **right-to-left** layout (most tools scramble Arabic word order — this one positions every word itself). |
-| 🔔 **Subscribe reminder** | An animated اشترك button with a bell "ding", generated programmatically and burned into every short. |
-| 🖼️ **AI thumbnails** | The best face frame is auto-picked and cut out — the presenter's *real pixels*, never an AI face — on a bold background under a huge Arabic headline. |
-| ✍️ **Auto copy** | Curiosity-driven title, description, hashtags and thumbnail headline, all from the local model. |
-| 📤 **One-tap upload** | Review on your phone, then upload straight to YouTube (official Data API v3). |
+| **Semantic segment selection** | A local LLM reads a sentence-numbered transcript and returns *indices* (never timestamps) every cut lands on a sentence boundary. Intros, sponsor reads and outros are masked out. |
+| **Silence-cut montage** | Dead air between words is removed with clean jump cuts and a subtle alternating punch-in zoom that fast, addictive rhythm. Captions stay perfectly in sync. |
+| **Egyptian-Arabic karaoke captions** | Word-by-word highlight with correct **right-to-left** layout (most tools scramble Arabic word order this one positions every word itself). |
+| **Subscribe reminder** | An animated اشترك button with a bell "ding", generated programmatically and burned into every short. |
+| **AI thumbnails** | The best face frame is auto-picked and cut out the presenter's *real pixels*, never an AI face on a bold background under a huge Arabic headline. |
+| **Auto copy** | Curiosity-driven title, description, hashtags and thumbnail headline, all from the local model. |
+| **One-tap upload** | Review on your phone, then upload straight to YouTube (official Data API v3). |
 
 <br>
 
@@ -45,24 +45,24 @@ hook and ends on its payoff, never a random mid-sentence cut.
     <td width="50%"><img src="docs/img/ui-review.png" alt="Review screen"></td>
   </tr>
   <tr>
-    <td align="center"><b>Create</b> — paste a link, pick how many Shorts, generate</td>
-    <td align="center"><b>Review</b> — edit copy, reshape the thumbnail, upload</td>
+    <td align="center"><b>Create</b> paste a link, pick how many Shorts, generate</td>
+    <td align="center"><b>Review</b> edit copy, reshape the thumbnail, upload</td>
   </tr>
 </table>
 
 > **Note on the images.** The screenshots use synthetic, face-free demo data (a
-> silhouette stands in for the presenter) — the real app composites your actual
+> silhouette stands in for the presenter) the real app composites your actual
 > face from the video. Nothing here is a real person.
 
-### AI thumbnails — three built-in styles
+### AI thumbnails three built-in styles
 
 <p align="center"><img src="docs/img/thumbnails.png" alt="Thumbnail templates" width="720"></p>
-<p align="center"><i>blur · burst · flat — real face cutout + huge shaped-Arabic headline, 1080×1920, ready to publish</i></p>
+<p align="center"><i>blur · burst · flat real face cutout + huge shaped-Arabic headline, 1080×1920, ready to publish</i></p>
 
 ### The subscribe reminder, frame by frame
 
 <p align="center"><img src="docs/img/subscribe.png" alt="Subscribe animation" width="720"></p>
-<p align="center"><i>The pill slides in → a cursor clicks اشترك → it flips to تم الاشتراك with a bell chime — no stock footage, drawn in code.</i></p>
+<p align="center"><i>The pill slides in → a cursor clicks اشترك → it flips to تم الاشتراك with a bell chime no stock footage, drawn in code.</i></p>
 
 ---
 
@@ -87,7 +87,7 @@ flowchart LR
 
 **Why it's different from a naive clipper:** the LLM never guesses timestamps
 (they're resolved from Whisper word timings in code), boundaries snap to whole
-sentences, and "number of shorts" is a **maximum** — if only 3 of 5 requested
+sentences, and "number of shorts" is a **maximum** if only 3 of 5 requested
 segments are genuinely strong, you get 3 and the UI tells you why. Quality over
 padding.
 
@@ -100,7 +100,7 @@ per-video SaaS fees.
 ## Quickstart
 
 **Prerequisites:** Python 3.11+, `ffmpeg`/`ffprobe` on PATH,
-[Ollama](https://ollama.com) with a model pulled — for Arabic content
+[Ollama](https://ollama.com) with a model pulled for Arabic content
 **`ollama pull command-r7b-arabic`** gives the best results (Arabic-specialized,
 fits 8 GB); `qwen2.5:7b` is a solid multilingual alternative. Optionally
 `cloudflared` for phone access.
@@ -111,7 +111,7 @@ pip install -r requirements.txt -r requirements-studio.txt
 # GPU transcription (NVIDIA):
 pip install nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-runtime-cu12 nvidia-cuda-nvrtc-cu12
 
-cp studio.example.yaml studio.yaml    # then edit — SET A STRONG app_password
+cp studio.example.yaml studio.yaml    # then edit SET A STRONG app_password
 python -m studio.login_setup          # one-time YouTube OAuth (see guide)
 python -m studio                      # prints a local + tunnel URL for your phone
 ```
@@ -131,11 +131,11 @@ looks).
 Built to sit on the public internet behind a tunnel:
 
 - Password gate with per-install **HMAC cookies** and **serialized login backoff + lockout**
-- **Fail-closed startup** — refuses to expose itself on a default/empty password
+- **Fail-closed startup** refuses to expose itself on a default/empty password
 - Strict **CSP** + security headers; every state-changing endpoint is auth-gated
 - **SSRF-guarded** downloads (host allowlist + private-IP blocking) and **upload size caps**
 - **AES-256-GCM vault** for cloud API keys (DPAPI-wrapped on Windows); ACL-locked OAuth token
-- No secrets in the repo — `secrets/`, `workspace/`, `studio.yaml` are gitignored
+- No secrets in the repo `secrets/`, `workspace/`, `studio.yaml` are gitignored
 
 Every hardening decision went through a dedicated security review before
 release. Read [the security notes](STUDIO_README.md#security-notes) before
