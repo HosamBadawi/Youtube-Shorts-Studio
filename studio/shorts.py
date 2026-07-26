@@ -104,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # 3. render each short (resilient: one failure / Ctrl+C keeps the rest) ---
     done = 0
+    used_titles: list[str] = []
+    used_headlines: list[str] = []
     for i, (start, end, topic) in enumerate(segments, 1):
         base = out_dir / f"{sid}_short{i}"
         seg_mp4 = str(base) + "_seg.mp4"
@@ -122,10 +124,15 @@ def main(argv: list[str] | None = None) -> int:
                 Path(raw).unlink(missing_ok=True)
 
             seg_text = " ".join(w.text for w in tr.words if start <= w.start < end)
-            meta = (ollama.generate_copy(seg_text or topic, niche, language)
+            meta = (ollama.generate_copy(seg_text or topic, niche, language,
+                                         avoid_titles=used_titles,
+                                         avoid_headlines=used_headlines)
                     if ollama.available() else None)
             print(f"   topic : {topic or '(n/a)'}")
             if meta:
+                used_titles.append(meta.title)
+                if meta.thumbnail_headline:
+                    used_headlines.append(meta.thumbnail_headline)
                 print(f"   title : {meta.title}")
                 print(f"   desc  : {meta.description}")
                 print(f"   tags  : {' '.join(meta.hashtags)}")

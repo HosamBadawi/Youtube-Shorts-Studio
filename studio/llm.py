@@ -18,9 +18,11 @@ keeps working with manual entry.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import re
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -56,7 +58,8 @@ class _BaseLLM:
         return self.model
 
     def _generate(self, prompt: str, want_json: bool = True,
-                  schema: dict | None = None) -> str | None:  # noqa
+                  schema: dict | None = None,
+                  temperature: float | None = None) -> str | None:  # noqa
         raise NotImplementedError
 
     # --- high-level (provider-agnostic) ------------------------------------
@@ -94,10 +97,19 @@ class _BaseLLM:
         return (start, end)
 
     def generate_copy(self, transcript_text: str, niche: str = "",
-                      language: str = "", avoid_titles: list[str] | None = None
+                      language: str = "", avoid_titles: list[str] | None = None,
+                      avoid_headlines: list[str] | None = None
                       ) -> VideoMeta | None:
         """Title (curiosity+result), description, thumbnail headline, hashtags
-        for one short — a single structured round-trip, validated + 1 retry."""
+        for one short — a structured round-trip, validated + retried.
+
+        Titles/headlines already used by sibling shorts are rejected in CODE,
+        not merely discouraged in the prompt: a small local model happily
+        repeats the same formulaic title for two different segments, so every
+        candidate is compared against ``avoid_titles`` / ``avoid_headlines``
+        and re-asked (with hotter sampling and the offending title quoted back)
+        until it differs.
+        """
         if not transcript_text.strip():
             transcript_text = "(no transcript available - infer from a generic " \
                               "engaging short-form video)"
@@ -105,17 +117,25 @@ class _BaseLLM:
         lang_rule = (f"Write everything in {language}." if language else
                      "Write everything in the SAME language as the transcript.")
         avoid = [t.strip() for t in (avoid_titles or []) if t.strip()]
-        avoid_rule = ""
+        avoid_h = [t.strip() for t in (avoid_headlines or []) if t.strip()]
+        base_rule = ""
         if avoid:
-            avoid_rule = ("\n   Do NOT reuse the opening words of these already-"
-                          "used titles (vary the formula):\n   - "
-                          + "\n   - ".join(avoid[:8]))
-        prompt = _COPY_PROMPT.format(
-            niche=niche or "general", language_rule=lang_rule,
-            avoid_rule=avoid_rule, transcript=transcript_text[:6000])
-        for _attempt in range(2):
+            base_rule = ("\n   These titles are ALREADY USED by other clips "
+                         "from the SAME video. Yours must be clearly different "
+                         "— different opening words AND a different angle:\n"
+                         "   - " + "\n   - ".join(avoid[:8]))
+        # Copy writing is a creative task: the default JSON-schema temperature
+        # (0.2) makes the model echo the prompt's own example titles for every
+        # clip. Start warm, get hotter on each duplicate.
+        best: VideoMeta | None = None
+        nudge = ""
+        for temp in (0.7, 0.9, 1.05):
+            prompt = _COPY_PROMPT.format(
+                niche=niche or "general", language_rule=lang_rule,
+                avoid_rule=base_rule + nudge,
+                transcript=transcript_text[:6000])
             obj = _loads(self._generate(prompt, want_json=True,
-                                        schema=_COPY_SCHEMA))
+                                        schema=_COPY_SCHEMA, temperature=temp))
             if not isinstance(obj, dict):
                 continue
             title = str(obj.get("title", "")).strip()[:100]
@@ -127,13 +147,40 @@ class _BaseLLM:
             # keep the shorter emotional fragment if the model echoed it.
             if headline and headline == title:
                 headline = " ".join(headline.split()[:5])
-            return VideoMeta(
+            meta = VideoMeta(
                 title=title,
                 description=description,
                 hashtags=normalize_hashtags(obj.get("hashtags")),
                 thumbnail_headline=" ".join(headline.split()[:7]),
                 source="ai")
-        return None
+            dup_title = _is_duplicate(meta.title, avoid)
+            dup_head = _is_duplicate(meta.thumbnail_headline, avoid_h)
+            if not dup_title and not dup_head:
+                return meta
+            best = best or meta
+            clash = meta.title if dup_title else meta.thumbnail_headline
+            logger.info("duplicate copy rejected (%r) — retrying hotter", clash)
+            nudge = (f"\n   You just wrote \"{clash}\", which is ALREADY USED. "
+                     f"Write something completely different: a different "
+                     f"opening phrase, a different fact from the transcript.")
+        if best is None:
+            return None
+        # Last resort — a model that keeps repeating itself must still not
+        # ship a duplicate. Fall back to this clip's OTHER generated text
+        # (headline, then the description's opening), which is always about
+        # this segment specifically. Nothing is invented.
+        if _is_duplicate(best.title, avoid):
+            best.title = _first_unique(
+                [best.thumbnail_headline, _lead(best.description)],
+                avoid, best.title)[:100]
+            logger.info("title replaced to keep it unique: %r", best.title)
+        if _is_duplicate(best.thumbnail_headline, avoid_h):
+            best.thumbnail_headline = " ".join(_first_unique(
+                [_lead(best.description), best.title],
+                avoid_h, best.thumbnail_headline).split()[:7])
+            logger.info("headline replaced to keep it unique: %r",
+                        best.thumbnail_headline)
+        return best
 
 
 class OllamaClient(_BaseLLM):
@@ -215,15 +262,18 @@ class OllamaClient(_BaseLLM):
         return self.model
 
     def _generate(self, prompt: str, want_json: bool = True,
-                  schema: dict | None = None) -> str | None:
+                  schema: dict | None = None,
+                  temperature: float | None = None) -> str | None:
         if not self.enabled:
             return None
+        if temperature is None:
+            # Structured selection work wants determinism; prose wanders a bit.
+            temperature = 0.2 if schema else 0.6
         payload = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            # Structured selection work wants determinism; prose can wander a bit.
-            "options": {"temperature": 0.2 if schema else 0.6},
+            "options": {"temperature": temperature},
         }
         if schema:
             # Ollama >= 0.5: grammar-constrained decoding from a JSON schema.
@@ -286,18 +336,20 @@ class CloudLLM(_BaseLLM):
         return CLOUD_MODELS.get(self.provider, [])
 
     def _generate(self, prompt: str, want_json: bool = True,
-                  schema: dict | None = None) -> str | None:
+                  schema: dict | None = None,
+                  temperature: float | None = None) -> str | None:
         # ``schema`` is enforced by Ollama only; cloud providers get JSON mode
         # and rely on the shape being described in the prompt (callers validate).
         if not self.available():
             return None
+        temp = 0.6 if temperature is None else temperature
         try:
             if self.provider == "openai":
-                return self._openai(prompt, want_json or bool(schema))
+                return self._openai(prompt, want_json or bool(schema), temp)
             if self.provider == "anthropic":
-                return self._anthropic(prompt)
+                return self._anthropic(prompt, temp)
             if self.provider == "gemini":
-                return self._gemini(prompt, want_json or bool(schema))
+                return self._gemini(prompt, want_json or bool(schema), temp)
         except urllib.error.HTTPError as exc:
             logger.warning("%s HTTP %s: %s", self.provider, exc.code,
                            exc.read().decode()[:200])
@@ -313,18 +365,20 @@ class CloudLLM(_BaseLLM):
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    def _openai(self, prompt: str, want_json: bool) -> str:
+    def _openai(self, prompt: str, want_json: bool,
+                temperature: float = 0.6) -> str:
         body = {"model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.6}
+                "temperature": temperature}
         if want_json:
             body["response_format"] = {"type": "json_object"}
         d = self._post("https://api.openai.com/v1/chat/completions", body,
                        {"Authorization": f"Bearer {self.api_key}"})
         return d["choices"][0]["message"]["content"]
 
-    def _anthropic(self, prompt: str) -> str:
+    def _anthropic(self, prompt: str, temperature: float = 0.6) -> str:
         body = {"model": self.model, "max_tokens": 1024,
+                "temperature": min(1.0, temperature),
                 "messages": [{"role": "user", "content": prompt}]}
         d = self._post("https://api.anthropic.com/v1/messages", body,
                        {"x-api-key": self.api_key,
@@ -332,10 +386,12 @@ class CloudLLM(_BaseLLM):
         return "".join(b.get("text", "") for b in d.get("content", [])
                        if b.get("type") == "text")
 
-    def _gemini(self, prompt: str, want_json: bool) -> str:
-        body: dict = {"contents": [{"parts": [{"text": prompt}]}]}
+    def _gemini(self, prompt: str, want_json: bool,
+                temperature: float = 0.6) -> str:
+        body: dict = {"contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"temperature": temperature}}
         if want_json:
-            body["generationConfig"] = {"responseMimeType": "application/json"}
+            body["generationConfig"]["responseMimeType"] = "application/json"
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
                f"{self.model}:generateContent?key={self.api_key}")
         d = self._post(url, body, {})
@@ -404,6 +460,51 @@ def _model_score(model: dict) -> tuple[float, float]:
     bonus = max((b for key, b in _FAMILY_BONUS.items()
                  if key in family or key in name), default=0.0)
     return (_param_billions(model) + bonus, _param_billions(model))
+
+
+# Arabic writes the same words several ways (harakat, tatweel, alef/ya/ta
+# variants), so a byte comparison would miss real duplicates.
+_HARAKAT = re.compile(r"[ً-ْـٰ]")
+_ALEF = str.maketrans("أإآٱ", "اااا")
+
+
+def _norm_title(text: str) -> str:
+    t = unicodedata.normalize("NFKC", text or "").casefold()
+    t = _HARAKAT.sub("", t).translate(_ALEF)
+    t = t.replace("ى", "ي").replace("ة", "ه")
+    t = re.sub(r"#\S+", " ", t)                 # hashtags aren't the title
+    t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _is_duplicate(text: str, used: list[str], ratio: float = 0.85) -> bool:
+    """True when ``text`` matches (or nearly matches) one of ``used``. Catches
+    both exact repeats and one-word-changed variants of the same title."""
+    a = _norm_title(text)
+    if not a:
+        return False
+    for other in used:
+        b = _norm_title(other)
+        if not b:
+            continue
+        if a == b or difflib.SequenceMatcher(None, a, b).ratio() >= ratio:
+            return True
+    return False
+
+
+def _lead(text: str, words: int = 7) -> str:
+    """The opening clause of the description — per-clip content usable as a
+    distinct title/headline when the model keeps repeating itself."""
+    first = re.split(r"[\n.!?؟…]", (text or "").strip(), maxsplit=1)[0]
+    return " ".join(first.split()[:words])
+
+
+def _first_unique(candidates: list[str], used: list[str], fallback: str) -> str:
+    for cand in candidates:
+        cand = (cand or "").strip()
+        if cand and not _is_duplicate(cand, used):
+            return cand
+    return fallback
 
 
 def _loads(raw: str | None) -> dict | None:

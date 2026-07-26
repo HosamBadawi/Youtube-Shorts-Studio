@@ -169,6 +169,7 @@ class StudioPipeline:
 
         job_ids: list[str] = []
         used_titles: list[str] = []
+        used_headlines: list[str] = []
         for idx, pick in enumerate(picks, 1):
             # each short owns an equal slice of the 40..98 percent band
             span = 58.0 / len(picks)
@@ -202,10 +203,13 @@ class StudioPipeline:
                           base + span * 0.65)
                     meta = self.llm.generate_copy(
                         job.transcript or pick.topic, niche, language,
-                        avoid_titles=used_titles)
+                        avoid_titles=used_titles,
+                        avoid_headlines=used_headlines)
                     if meta:
                         job.meta = meta
                         used_titles.append(meta.title)
+                        if meta.thumbnail_headline:
+                            used_headlines.append(meta.thumbnail_headline)
 
                 if self.cfg.thumbs_enabled:
                     job.stage = f"short {idx}: composing thumbnail"
@@ -407,9 +411,19 @@ class StudioPipeline:
         self.store.patch(job_id, stage="")
 
     def regenerate_copy(self, job: Job, niche: str = "") -> VideoMeta:
-        """Redraft title/description/headline for one short (server path)."""
+        """Redraft title/description/headline for one short (server path).
+        Sibling shorts from the same batch are excluded so a rewrite can't
+        collide with a title that is already on screen."""
         language = self._metadata_language("")
-        meta = self.llm.generate_copy(job.transcript, niche, language)
+        siblings = (self.store.list_by_batch(job.batch_id)
+                    if job.batch_id else [])
+        avoid_t = [j.meta.title for j in siblings
+                   if j.id != job.id and j.meta.title]
+        avoid_h = [j.meta.thumbnail_headline for j in siblings
+                   if j.id != job.id and j.meta.thumbnail_headline]
+        meta = self.llm.generate_copy(job.transcript, niche, language,
+                                      avoid_titles=avoid_t,
+                                      avoid_headlines=avoid_h)
         if meta:
             job.meta = meta
             self.store.patch_meta(job.id, meta)
